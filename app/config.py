@@ -1,9 +1,9 @@
 import os
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Используем диск Render, который монтируется в /var/data
+UPLOAD_DIR = "/var/data/uploads"
 
-# Папка для загрузок
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+# Создаём директорию, если её нет
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Разрешённые расширения (MVP)
