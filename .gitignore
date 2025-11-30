@@ -1,20 +1,32 @@
 # Python venv
 venv/
 ENV/
-.env
 
 # Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# Uploaded user files
-uploads/
-
-# Logs
+# Логи и данные
 logs/
 *.log
+data/
+uploads/
 
-# OS / Editor files
-.DS_Store
+# Env
+.env
+.env.*
+*.env
+
+# Node/Next (frontend)
+studyplan-frontend/node_modules/
+studyplan-frontend/.next/
+studyplan-frontend/.turbo/
+studyplan-frontend/.env.local
+studyplan-frontend/.env.*
+
+# IDE / OS
 .vscode/
 .idea/
+.DS_Store

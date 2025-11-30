@@ -1,7 +1,14 @@
-from typing import List
+from io import BytesIO
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+from app.schemas.studyplan import PlanPdfRequest
 from app.utils.logger import logger
 from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
 from app.services.structure_extractor import extract_structure
@@ -29,7 +36,6 @@ def build_lesson_context(lesson: dict) -> str:
 
     theory = lesson.get("theory")
     if theory:
-        # theory может быть строкой или списком
         if isinstance(theory, list):
             theory_text = "\n".join(str(t) for t in theory)
         else:
@@ -38,7 +44,6 @@ def build_lesson_context(lesson: dict) -> str:
 
     practice = lesson.get("practice")
     if practice:
-        # practice часто бывает списком задач
         if isinstance(practice, list):
             practice_text = "\n".join(f"- {str(p)}" for p in practice)
         else:
@@ -56,37 +61,6 @@ def build_lesson_context(lesson: dict) -> str:
     return "\n\n".join(parts)
 
 
-def attach_page_links(plan_days: List[dict], pages_count: int) -> List[dict]:
-    """
-    Равномерно распределяем страницы исходного PDF по дням.
-    Например, 100 страниц и 5 дней → по ~20 страниц на день.
-
-    Если урок уже содержит source_pages (пришли от LLM),
-    мы их не трогаем.
-    """
-    total_days = len(plan_days)
-    if total_days == 0 or pages_count <= 0:
-        return plan_days
-
-    pages_per_day = max(1, pages_count // total_days)
-
-    for i, lesson in enumerate(plan_days):
-        # если модель уже проставила страницы — не затираем
-        if lesson.get("source_pages"):
-            continue
-
-        start = i * pages_per_day + 1
-        if i == total_days - 1:
-            # последний день забирает хвост
-            end = pages_count
-        else:
-            end = min(pages_count, start + pages_per_day - 1)
-
-        lesson["source_pages"] = list(range(start, end + 1))
-
-    return plan_days
-
-
 @router.post("/study")
 async def generate_study_plan(
     file_id: str,
@@ -97,12 +71,13 @@ async def generate_study_plan(
     """
     Генерация Study Mode учебного плана:
     1) Находит файл
-    2) Извлекает ПОЛНУЮ структуру: главы + страницы
+    2) Извлекает структуру (главы+страницы)
     3) Извлекает текст
     4) Чистит и делит на чанки
     5) Классифицирует документ
     6) Генерирует учебный план на days дней
-    7) (опционально) Генерирует flashcards для каждого дня
+    7) (опционально) флешкарты
+    8) Равномерно размазывает страницы PDF по дням → source_pages
     """
 
     logger.info(
@@ -127,40 +102,80 @@ async def generate_study_plan(
     # -----------------------------------------------------------
     structure = extract_structure(file_path)
     if not structure:
-        logger.warning("[GENERATE] Structure extraction failed, falling back to simple text")
+        logger.warning("[GENERATE] Structure extraction failed, using empty structure")
         structure = []
 
     # -----------------------------------------------------------
-    # 2.1. Подсчёт количества страниц PDF
+    # 3. Извлечение страниц (для привязки уроков к страницам)
     # -----------------------------------------------------------
     try:
         pages = extract_pdf_pages(file_path)
         pages_count = len(pages)
-        logger.info(f"[GENERATE] PDF pages detected: {pages_count}")
-    except Exception as e:
-        logger.error(f"[GENERATE] Failed to extract pages: {e}")
+        logger.info(f"[GENERATE] PDF pages extracted: {pages_count}")
+    except Exception:
+        logger.exception("[GENERATE] Failed to extract PDF pages")
+        pages = []
         pages_count = 0
 
     # -----------------------------------------------------------
-    # 3. Извлечение и очистка текста
+    # 4. Извлечение и очистка текста
     # -----------------------------------------------------------
     raw_text = extract_pdf_text(file_path)
     cleaned = clean_text(raw_text)
 
     chunks = chunk_text(cleaned, max_chars=2500, overlap=200)
-
     if not chunks:
         raise HTTPException(status_code=500, detail="Failed to chunk text")
 
     # -----------------------------------------------------------
-    # 4. Классификация по первому чанку
+    # 5. Классификация по первому чанку
     # -----------------------------------------------------------
     analysis = classify_document(chunks[0])
 
     # -----------------------------------------------------------
-    # 5. Генерация учебного плана по дням + флешкарты
+    # 6. Подготовка разбиения страниц по дням
     # -----------------------------------------------------------
-    plan: List[dict] = []
+    # Страницы считаем 1..pages_count
+    if pages_count > 0 and days > 0:
+        base_per_day = pages_count // days
+        extra = pages_count % days
+    else:
+        base_per_day = 0
+        extra = 0
+
+    def get_pages_for_day(day_number: int) -> list[int]:
+        """
+        Равномерно распределяем страницы по дням:
+        первые `extra` дней получают (base_per_day + 1) страниц,
+        остальные — base_per_day.
+        """
+        if pages_count == 0 or days <= 0:
+            return []
+
+        day_idx = day_number - 1  # 0-based
+
+        prev_days = day_idx
+        pages_before = prev_days * base_per_day + min(prev_days, extra)
+
+        curr_count = base_per_day + (1 if day_idx < extra else 0)
+        if curr_count <= 0:
+            return []
+
+        start_page = pages_before + 1
+        end_page = pages_before + curr_count
+
+        start_page = max(1, start_page)
+        end_page = min(pages_count, end_page)
+
+        if start_page > end_page:
+            return []
+
+        return list(range(start_page, end_page + 1))
+
+    # -----------------------------------------------------------
+    # 7. Генерация учебного плана по дням + флешкарты + source_pages
+    # -----------------------------------------------------------
+    plan = []
     for day in range(1, days + 1):
         lesson = generate_day_plan(
             day_number=day,
@@ -168,10 +183,15 @@ async def generate_study_plan(
             document_type=analysis["document_type"],
             main_topics=analysis["main_topics"],
             summary=analysis["summary"],
-            structure=structure,  # <---- здесь используется структура
+            structure=structure,
         )
 
-        # --- 5.1. Генерация flashcards поверх урока (если включено) ---
+        # Привязка к страницам оригинального PDF
+        pages_for_day = get_pages_for_day(day)
+        lesson["source_pages"] = pages_for_day
+        logger.info(f"[GENERATE] Day {day}: source_pages={pages_for_day}")
+
+        # Флешкарты (если включены)
         if include_flashcards:
             content = build_lesson_context(lesson)
             if content.strip():
@@ -183,11 +203,6 @@ async def generate_study_plan(
 
         plan.append(lesson)
 
-    # -----------------------------------------------------------
-    # 6. Привязка страниц оригинального PDF к дням
-    # -----------------------------------------------------------
-    plan = attach_page_links(plan, pages_count)
-
     logger.info("[GENERATE] Study plan generated successfully")
 
     return {
@@ -198,3 +213,42 @@ async def generate_study_plan(
         "structure": structure,
         "plan": {"days": plan},
     }
+
+
+@router.post("/pdf")
+async def generate_plan_pdf(payload: PlanPdfRequest):
+    """
+    Принимает от фронтенда текст учебного плана и возвращает PDF-файл.
+    Используем шрифт DejaVuSans для нормальных русских букв.
+    """
+    buf = BytesIO()
+
+    # шрифт лежит в app/fonts/DejaVuSans.ttf (вы уже его копировали)
+    pdfmetrics.registerFont(TTFont("DejaVu", "app/fonts/DejaVuSans.ttf"))
+
+    pdf = canvas.Canvas(buf, pagesize=A4)
+    width, height = A4
+
+    text_object = pdf.beginText(40, height - 50)
+    text_object.setFont("DejaVu", 11)
+
+    for line in payload.content.splitlines():
+        # Переход на новую страницу, если вышли за нижнее поле
+        if text_object.getY() < 60:
+            pdf.drawText(text_object)
+            pdf.showPage()
+            text_object = pdf.beginText(40, height - 50)
+            text_object.setFont("DejaVu", 11)
+
+        text_object.textLine(line)
+
+    pdf.drawText(text_object)
+    pdf.showPage()
+    pdf.save()
+    buf.seek(0)
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="study-plan-{payload.days}-days.pdf"'
+    }
+
+    return StreamingResponse(buf, media_type="application/pdf", headers=headers)
