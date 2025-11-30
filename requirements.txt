@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+pydantic
+python-multipart
+
+# PDF extractors
+PyMuPDF
+pdfplumber
+PyPDF2
+
+# LLM (если используешь OpenAI)
+openai
+
+# Optional (если у тебя есть в сервисах)
+python-dotenv
