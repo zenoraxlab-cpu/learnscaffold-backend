@@ -74,10 +74,10 @@ async def analyze_document(file_id: str):
     logger.info(f"LLM classification: {analysis}")
 
     # ---------------------------------------------------------------
-    # 7. Извлекаем структуру PDF: главы, подглавы, страницы
+    # 7. Извлекаем структуру PDF — ВАЖНО: только по file_path !!!
     # ---------------------------------------------------------------
-    structure = extract_structure(cleaned_text, pages)
-    logger.info(f"Structure extraction finished: {len(structure.get('sections', []))} sections found")
+    structure = extract_structure(file_path)
+    logger.info(f"Structure extraction: {len(structure)} sections")
 
     # ---------------------------------------------------------------
     # 8. Базовая аналитика по тексту
@@ -100,5 +100,5 @@ async def analyze_document(file_id: str):
         "pages": len(pages),
         "first_chunk_preview": preview,
         "analysis": analysis,
-        "structure": structure,  # ← ВАЖНО: главы + подглавы + страницы
+        "structure": structure,
     }
