@@ -41,9 +41,14 @@ if not OPENAI_API_KEY:
     print("WARNING: OPENAI_API_KEY is not set. LLM features will not work.")
 
 # ----------------------------
-# OCR.Space configuration
+# Google Vision OCR (NEW)
 # ----------------------------
-OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY", "").strip()
+GOOGLE_OCR_API_KEY = os.getenv("GOOGLE_OCR_API_KEY", "")
 
-if not OCR_SPACE_API_KEY:
-    print("WARNING: OCR_SPACE_API_KEY is not set. OCR for scanned PDFs will be disabled.")
+if not GOOGLE_OCR_API_KEY:
+    print("WARNING: GOOGLE_OCR_API_KEY not set — scanned PDFs will fail")
+
+# ----------------------------
+# Other external services (placeholders)
+# ----------------------------
+OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY", "")

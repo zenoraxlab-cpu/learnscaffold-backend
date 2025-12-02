@@ -5,7 +5,9 @@ import os
 import httpx
 
 from app.utils.logger import logger
-from app.config import OCR_SPACE_API_KEY
+from app.services.google_ocr import google_ocr_pdf   # <-- GOOGLE OCR
+from app.config import GOOGLE_OCR_API_KEY
+
 
 """
 Unified PDF extraction pipeline:
@@ -15,71 +17,12 @@ Order:
 2) PyMuPDF
 3) pdfplumber
 4) PyPDF2
-5) OCR.Space fallback (async)
+5) Google Vision OCR fallback (async)
 
 APIs:
 - extract_pdf_text(path)  -> str
 - extract_pdf_pages(path) -> [{page, text}]
 """
-
-
-# =====================================================================
-# OCR.SPACE REQUEST
-# =====================================================================
-
-async def ocr_space_request(path: str) -> str:
-    """
-    Sends PDF file to OCR.Space API and returns extracted text.
-    """
-    logger.info("[OCR.Space] Starting OCR request")
-
-    if not OCR_SPACE_API_KEY:
-        logger.error("[OCR.Space] Missing API key. Set OCR_SPACE_API_KEY.")
-        return ""
-
-    try:
-        with open(path, "rb") as f:
-            file_bytes = f.read()
-
-        data = {
-            "language": "eng,rus",
-            "isOverlayRequired": False,
-        }
-
-        files = {
-            "file": ("input.pdf", file_bytes, "application/pdf")
-        }
-
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                "https://api.ocr.space/parse/image",
-                data=data,
-                files=files,
-                headers={"apikey": OCR_SPACE_API_KEY}
-            )
-
-        if resp.status_code != 200:
-            logger.error(f"[OCR.Space] HTTP {resp.status_code}")
-            return ""
-
-        js = resp.json()
-
-        if js.get("OCRExitCode") != 1:
-            logger.error(f"[OCR.Space] API error: {js.get('ErrorMessage')}")
-            return ""
-
-        parsed = js.get("ParsedResults")
-        if not parsed:
-            logger.error("[OCR.Space] No ParsedResults")
-            return ""
-
-        text = parsed[0].get("ParsedText", "")
-        logger.info(f"[OCR.Space] OCR returned {len(text)} characters")
-        return text
-
-    except Exception as e:
-        logger.error(f"[OCR.Space] Exception: {e}")
-        return ""
 
 
 # =====================================================================
@@ -108,7 +51,6 @@ def detect_scanned_pdf(path: str) -> bool:
         return False
 
     except Exception:
-        # If PyMuPDF fails, assume scanned to avoid further crashes
         logger.warning("[PDF] detect_scanned_pdf failed → assuming scanned")
         return True
 
@@ -120,7 +62,6 @@ def detect_scanned_pdf(path: str) -> bool:
 def split_text_into_pages(text: str, page_count: int) -> list:
     """
     Splits OCR text into page_count equal segments.
-    (OCR.Space does not return per-page data.)
     """
     if page_count <= 1:
         return [{"page": 1, "text": text}]
@@ -141,7 +82,7 @@ def split_text_into_pages(text: str, page_count: int) -> list:
 
 
 # =====================================================================
-# EXTRACT TEXT
+# EXTRACT TEXT (Main function)
 # =====================================================================
 
 async def extract_pdf_text(path: str) -> str:
@@ -149,8 +90,8 @@ async def extract_pdf_text(path: str) -> str:
 
     # --- scanned PDF → OCR immediately ---
     if detect_scanned_pdf(path):
-        logger.warning("[PDF] Scanned PDF → OCR.Space fallback")
-        return await ocr_space_request(path)
+        logger.warning("[PDF] Scanned PDF → Google Vision OCR fallback")
+        return await google_ocr_pdf(path)
 
     # --- PyMuPDF ---
     try:
@@ -198,14 +139,14 @@ async def extract_pdf_text(path: str) -> str:
             logger.info("[PDF] PyPDF2 OK")
             return tmp
 
-        logger.warning("[PDF] PyPDF2 empty → OCR.Space")
+        logger.warning("[PDF] PyPDF2 empty → OCR fallback")
 
     except Exception as e:
         logger.warning(f"[PDF] PyPDF2 failed: {e}")
 
     # --- OCR fallback ---
-    logger.warning("[PDF] Switching to OCR.Space fallback")
-    return await ocr_space_request(path)
+    logger.warning("[PDF] Switching to Google Vision OCR fallback")
+    return await google_ocr_pdf(path)
 
 
 # =====================================================================
@@ -217,9 +158,9 @@ async def extract_pdf_pages(path: str) -> list:
 
     # --- scanned → OCR immediately ---
     if detect_scanned_pdf(path):
-        logger.warning("[PDF] Scanned → OCR.Space page fallback")
+        logger.warning("[PDF] Scanned → Google Vision OCR for pages")
 
-        text = await ocr_space_request(path)
+        text = await google_ocr_pdf(path)
         if not text.strip():
             return []
 
@@ -280,13 +221,13 @@ async def extract_pdf_pages(path: str) -> list:
             logger.info("[PDF] PyPDF2 per-page OK")
             return pages
 
-        logger.warning("[PDF] PyPDF2 empty → OCR.Space")
+        logger.warning("[PDF] PyPDF2 empty → OCR fallback")
 
     except Exception as e:
         logger.warning(f"[PDF] PyPDF2 failed: {e}")
 
     # --- OCR fallback ---
-    text = await ocr_space_request(path)
+    text = await google_ocr_pdf(path)
     if not text.strip():
         return []
 
