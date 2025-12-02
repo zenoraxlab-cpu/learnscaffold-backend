@@ -3,15 +3,10 @@ from fastapi import APIRouter, HTTPException
 import os
 
 from app.utils.logger import logger
-
-# NEW — only correct imports:
 from app.services.pdf_extractor import (
     extract_pdf_text,
     extract_pdf_pages,
-    detect_scanned_pdf,
-    ocr_space_request,
 )
-
 from app.services.structure_extractor import extract_structure
 from app.services.text_cleaner import clean_text
 from app.services.chunker import chunk_text
@@ -35,8 +30,9 @@ def build_lesson_context(lesson: dict) -> str:
 
     theory = lesson.get("theory")
     if theory:
-        parts.append("Theory:\n" + (theory if isinstance(theory, str) 
-                                    else "\n".join(theory)))
+        parts.append(
+            "Theory:\n" + (theory if isinstance(theory, str) else "\n".join(theory))
+        )
 
     practice = lesson.get("practice")
     if practice:
@@ -44,8 +40,9 @@ def build_lesson_context(lesson: dict) -> str:
 
     summary = lesson.get("summary")
     if summary:
-        parts.append("Summary:\n" + (summary if isinstance(summary, str)
-                                     else "\n".join(summary)))
+        parts.append(
+            "Summary:\n" + (summary if isinstance(summary, str) else "\n".join(summary))
+        )
 
     return "\n\n".join(parts)
 
@@ -65,7 +62,6 @@ def attach_page_links(plan_days: List[dict], pages_count: int) -> List[dict]:
             continue
 
         start = i * pages_per_day + 1
-
         end = pages_count if i == total_days - 1 else start + pages_per_day - 1
         end = min(end, pages_count)
 
@@ -102,18 +98,12 @@ async def generate_study_plan(
         raise HTTPException(status_code=404, detail="File not found")
 
     # -----------------------------------------------------------------
-    # 2. Detect scanned PDF (no text layer)
-    # -----------------------------------------------------------------
-    is_scanned = detect_scanned_pdf(file_path)
-    logger.info(f"[GENERATE] Scanned PDF: {is_scanned}")
-
-    # -----------------------------------------------------------------
-    # 3. Extract structure (chapters, headings, etc.)
+    # 2. Extract structure (chapters, headings)
     # -----------------------------------------------------------------
     structure = extract_structure(file_path) or []
 
     # -----------------------------------------------------------------
-    # 4. Extract pages count
+    # 3. Count PDF pages
     # -----------------------------------------------------------------
     try:
         pages = await extract_pdf_pages(file_path)
@@ -123,33 +113,32 @@ async def generate_study_plan(
         pages_count = 0
 
     # -----------------------------------------------------------------
-    # 5. Extract text or use OCR.Space
+    # 4. Extract text — with Google OCR fallback inside
     # -----------------------------------------------------------------
-    if is_scanned:
-        logger.info("[GENERATE] Running OCR.Space…")
-        raw_text = await ocr_space_request(file_path)
-    else:
-        raw_text = await extract_pdf_text(file_path)
+    raw_text = await extract_pdf_text(file_path)
 
     if not raw_text or not raw_text.strip():
-        raise HTTPException(status_code=500, detail="Failed to extract text")
+        raise HTTPException(status_code=500, detail="Failed to extract text from PDF")
 
-    # Cleaning
+    # -----------------------------------------------------------------
+    # 5. Clean text
+    # -----------------------------------------------------------------
     cleaned = clean_text(raw_text)
 
-    # Chunking
+    # -----------------------------------------------------------------
+    # 6. Split into chunks
+    # -----------------------------------------------------------------
     chunks = chunk_text(cleaned, max_chars=2500, overlap=200)
     if not chunks:
         raise HTTPException(status_code=500, detail="Chunking failed")
 
     # -----------------------------------------------------------------
-    # 6. Classification
+    # 7. Classification
     # -----------------------------------------------------------------
     analysis = classify_document(chunks[0])
-    analysis["is_scanned"] = is_scanned
 
     # -----------------------------------------------------------------
-    # 7. Generate daily lessons
+    # 8. Generate daily lessons
     # -----------------------------------------------------------------
     plan_days: List[dict] = []
 
@@ -163,6 +152,7 @@ async def generate_study_plan(
             structure=structure,
         )
 
+        # Add flashcards if requested
         if include_flashcards:
             ctx = build_lesson_context(lesson)
             if ctx.strip():
@@ -175,11 +165,11 @@ async def generate_study_plan(
         plan_days.append(lesson)
 
     # -----------------------------------------------------------------
-    # 8. Attach PDF page references
+    # 9. Map lessons → PDF pages
     # -----------------------------------------------------------------
     plan_days = attach_page_links(plan_days, pages_count)
 
-    logger.info("[GENERATE] Completed successfully")
+    logger.info("[GENERATE] Completed OK")
 
     return {
         "status": "ok",
