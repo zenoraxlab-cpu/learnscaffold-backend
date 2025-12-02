@@ -1,9 +1,17 @@
 from typing import List
-
 from fastapi import APIRouter, HTTPException
+import os
 
 from app.utils.logger import logger
-from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
+
+# NEW — only correct imports:
+from app.services.pdf_extractor import (
+    extract_pdf_text,
+    extract_pdf_pages,
+    detect_scanned_pdf,
+    ocr_space_request,
+)
+
 from app.services.structure_extractor import extract_structure
 from app.services.text_cleaner import clean_text
 from app.services.chunker import chunk_text
@@ -11,199 +19,173 @@ from app.services.classifier import classify_document
 from app.services.llm_study import generate_day_plan
 from app.services.llm_flashcards import generate_flashcards_for_lesson
 from app.config import UPLOAD_DIR
-import os
 
 router = APIRouter()
 
 
+# ---------------------------------------------------------------------
+# Build text context for flashcards
+# ---------------------------------------------------------------------
 def build_lesson_context(lesson: dict) -> str:
-  """
-  Build a concatenated text context for a single lesson
-  to be used for flashcard generation.
+    parts: list[str] = []
 
-  It carefully handles strings and lists for fields like
-  theory, practice, and summary.
-  """
-  parts: list[str] = []
+    title = lesson.get("title")
+    if title:
+        parts.append(f"Title: {title}")
 
-  title = lesson.get("title")
-  if title:
-      parts.append(f"Title: {title}")
+    theory = lesson.get("theory")
+    if theory:
+        parts.append("Theory:\n" + (theory if isinstance(theory, str) 
+                                    else "\n".join(theory)))
 
-  theory = lesson.get("theory")
-  if theory:
-      if isinstance(theory, list):
-          theory_text = "\n".join(str(t) for t in theory)
-      else:
-          theory_text = str(theory)
-      parts.append("Theory:\n" + theory_text)
+    practice = lesson.get("practice")
+    if practice:
+        parts.append("Practice:\n" + "\n".join(f"- {p}" for p in practice))
 
-  practice = lesson.get("practice")
-  if practice:
-      if isinstance(practice, list):
-          practice_text = "\n".join(f"- {str(p)}" for p in practice)
-      else:
-          practice_text = str(practice)
-      parts.append("Practice:\n" + practice_text)
+    summary = lesson.get("summary")
+    if summary:
+        parts.append("Summary:\n" + (summary if isinstance(summary, str)
+                                     else "\n".join(summary)))
 
-  summary = lesson.get("summary")
-  if summary:
-      if isinstance(summary, list):
-          summary_text = "\n".join(str(s) for s in summary)
-      else:
-          summary_text = str(summary)
-      parts.append("Summary:\n" + summary_text)
-
-  return "\n\n".join(parts)
+    return "\n\n".join(parts)
 
 
+# ---------------------------------------------------------------------
+# Add source_pages to each lesson
+# ---------------------------------------------------------------------
 def attach_page_links(plan_days: List[dict], pages_count: int) -> List[dict]:
-  """
-  Evenly distribute original PDF pages across lessons (days).
+    total_days = len(plan_days)
+    if total_days == 0 or pages_count <= 0:
+        return plan_days
 
-  Example:
-    100 pages, 5 days → ~20 pages per day.
+    pages_per_day = max(1, pages_count // total_days)
 
-  If a lesson already has source_pages (from the LLM), we keep them
-  and do not overwrite.
-  """
-  total_days = len(plan_days)
-  if total_days == 0 or pages_count <= 0:
-      return plan_days
+    for i, lesson in enumerate(plan_days):
+        if lesson.get("source_pages"):
+            continue
 
-  pages_per_day = max(1, pages_count // total_days)
+        start = i * pages_per_day + 1
 
-  for i, lesson in enumerate(plan_days):
-      # Skip if LLM already provided explicit page mapping
-      if lesson.get("source_pages"):
-          continue
+        end = pages_count if i == total_days - 1 else start + pages_per_day - 1
+        end = min(end, pages_count)
 
-      start = i * pages_per_day + 1
-      if i == total_days - 1:
-          # Last day takes the remaining tail
-          end = pages_count
-      else:
-          end = min(pages_count, start + pages_per_day - 1)
+        lesson["source_pages"] = list(range(start, end + 1))
 
-      lesson["source_pages"] = list(range(start, end + 1))
-
-  return plan_days
+    return plan_days
 
 
+# ---------------------------------------------------------------------
+# MAIN ENDPOINT
+# ---------------------------------------------------------------------
 @router.post("/study")
 async def generate_study_plan(
-  file_id: str,
-  days: int = 14,
-  include_flashcards: bool = False,
-  flashcards_per_lesson: int = 5,
+    file_id: str,
+    days: int = 14,
+    include_flashcards: bool = False,
+    flashcards_per_lesson: int = 5,
 ):
-  """
-  Study Mode plan generation.
+    logger.info(
+        f"[GENERATE] Request: file_id={file_id}, days={days}, "
+        f"flashcards={include_flashcards}"
+    )
 
-  Pipeline:
-    1) Locate uploaded file by file_id
-    2) Extract full structure (chapters + pages)
-    3) Extract raw text from PDF
-    4) Clean and chunk text
-    5) Classify document with LLM
-    6) Generate a day-by-day learning plan for `days`
-    7) Optionally generate flashcards for each day
-  """
+    # -----------------------------------------------------------------
+    # 1. Resolve file path
+    # -----------------------------------------------------------------
+    file_path = None
+    for fname in os.listdir(UPLOAD_DIR):
+        if fname.startswith(file_id):
+            file_path = os.path.join(UPLOAD_DIR, fname)
+            break
 
-  logger.info(
-      "[GENERATE] Study plan request: "
-      f"file_id={file_id}, days={days}, "
-      f"include_flashcards={include_flashcards}, "
-      f"flashcards_per_lesson={flashcards_per_lesson}"
-  )
+    if not file_path:
+        raise HTTPException(status_code=404, detail="File not found")
 
-  # -----------------------------------------------------------
-  # 1. Locate file by file_id
-  # -----------------------------------------------------------
-  file_path = None
-  for fname in os.listdir(UPLOAD_DIR):
-      if fname.startswith(file_id):
-          file_path = os.path.join(UPLOAD_DIR, fname)
-          break
+    # -----------------------------------------------------------------
+    # 2. Detect scanned PDF (no text layer)
+    # -----------------------------------------------------------------
+    is_scanned = detect_scanned_pdf(file_path)
+    logger.info(f"[GENERATE] Scanned PDF: {is_scanned}")
 
-  if not file_path:
-      raise HTTPException(status_code=404, detail="File not found")
+    # -----------------------------------------------------------------
+    # 3. Extract structure (chapters, headings, etc.)
+    # -----------------------------------------------------------------
+    structure = extract_structure(file_path) or []
 
-  # -----------------------------------------------------------
-  # 2. Extract document structure (chapters + pages)
-  # -----------------------------------------------------------
-  structure = extract_structure(file_path)
-  if not structure:
-      logger.warning(
-          "[GENERATE] Structure extraction returned empty result, "
-          "falling back to text-only pipeline"
-      )
-      structure = []
+    # -----------------------------------------------------------------
+    # 4. Extract pages count
+    # -----------------------------------------------------------------
+    try:
+        pages = await extract_pdf_pages(file_path)
+        pages_count = len(pages)
+    except Exception as e:
+        logger.error(f"[GENERATE] Page extraction failed: {e}")
+        pages_count = 0
 
-  # -----------------------------------------------------------
-  # 2.1. Count PDF pages for later linking
-  # -----------------------------------------------------------
-  try:
-      pages = extract_pdf_pages(file_path)
-      pages_count = len(pages)
-      logger.info(f"[GENERATE] PDF pages detected: {pages_count}")
-  except Exception as e:
-      logger.error(f"[GENERATE] Failed to extract pages: {e}")
-      pages_count = 0
+    # -----------------------------------------------------------------
+    # 5. Extract text or use OCR.Space
+    # -----------------------------------------------------------------
+    if is_scanned:
+        logger.info("[GENERATE] Running OCR.Space…")
+        raw_text = await ocr_space_request(file_path)
+    else:
+        raw_text = await extract_pdf_text(file_path)
 
-  # -----------------------------------------------------------
-  # 3. Extract and clean text
-  # -----------------------------------------------------------
-  raw_text = extract_pdf_text(file_path)
-  cleaned = clean_text(raw_text)
+    if not raw_text or not raw_text.strip():
+        raise HTTPException(status_code=500, detail="Failed to extract text")
 
-  chunks = chunk_text(cleaned, max_chars=2500, overlap=200)
-  if not chunks:
-      raise HTTPException(status_code=500, detail="Failed to chunk text")
+    # Cleaning
+    cleaned = clean_text(raw_text)
 
-  # -----------------------------------------------------------
-  # 4. LLM-based classification using the first chunk
-  # -----------------------------------------------------------
-  analysis = classify_document(chunks[0])
+    # Chunking
+    chunks = chunk_text(cleaned, max_chars=2500, overlap=200)
+    if not chunks:
+        raise HTTPException(status_code=500, detail="Chunking failed")
 
-  # -----------------------------------------------------------
-  # 5. Generate day-by-day plan (+ optional flashcards)
-  # -----------------------------------------------------------
-  plan: List[dict] = []
-  for day in range(1, days + 1):
-      lesson = generate_day_plan(
-          day_number=day,
-          total_days=days,
-          document_type=analysis.get("document_type"),
-          main_topics=analysis.get("main_topics", []),
-          summary=analysis.get("summary", ""),
-          structure=structure,
-      )
+    # -----------------------------------------------------------------
+    # 6. Classification
+    # -----------------------------------------------------------------
+    analysis = classify_document(chunks[0])
+    analysis["is_scanned"] = is_scanned
 
-      # 5.1. Generate flashcards for this lesson (optional)
-      if include_flashcards:
-          content = build_lesson_context(lesson)
-          if content.strip():
-              lesson["flashcards"] = generate_flashcards_for_lesson(
-                  content=content,
-                  language=analysis.get("language", "en"),
-                  count=flashcards_per_lesson,
-              )
+    # -----------------------------------------------------------------
+    # 7. Generate daily lessons
+    # -----------------------------------------------------------------
+    plan_days: List[dict] = []
 
-      plan.append(lesson)
+    for day in range(1, days + 1):
+        lesson = generate_day_plan(
+            day_number=day,
+            total_days=days,
+            document_type=analysis.get("document_type"),
+            main_topics=analysis.get("main_topics", []),
+            summary=analysis.get("summary", ""),
+            structure=structure,
+        )
 
-  # -----------------------------------------------------------
-  # 6. Attach original PDF page references to each lesson
-  # -----------------------------------------------------------
-  plan = attach_page_links(plan, pages_count)
+        if include_flashcards:
+            ctx = build_lesson_context(lesson)
+            if ctx.strip():
+                lesson["flashcards"] = generate_flashcards_for_lesson(
+                    content=ctx,
+                    language=analysis.get("language", "en"),
+                    count=flashcards_per_lesson,
+                )
 
-  logger.info("[GENERATE] Study plan generated successfully")
+        plan_days.append(lesson)
 
-  return {
-      "status": "ok",
-      "file_id": file_id,
-      "days": days,
-      "analysis": analysis,
-      "structure": structure,
-      "plan": {"days": plan},
-  }
+    # -----------------------------------------------------------------
+    # 8. Attach PDF page references
+    # -----------------------------------------------------------------
+    plan_days = attach_page_links(plan_days, pages_count)
+
+    logger.info("[GENERATE] Completed successfully")
+
+    return {
+        "status": "ok",
+        "file_id": file_id,
+        "days": days,
+        "analysis": analysis,
+        "structure": structure,
+        "plan": {"days": plan_days},
+    }

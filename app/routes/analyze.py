@@ -13,19 +13,22 @@ from app.config import UPLOAD_DIR
 
 router = APIRouter()
 
-# -----------------------------------------------------------
-# GLOBAL TASK STATUS STORAGE
-# -----------------------------------------------------------
+
+# ======================================================================
+# TASK STATUS STORAGE
+# ======================================================================
 
 class TaskStatus(str, Enum):
     UPLOADED = "uploaded"
     ANALYZING = "analyzing"
     EXTRACTING = "extracting"
+    EXTRACTING_TEXT = "extracting_text"
     CHUNKING = "chunking"
     CLASSIFYING = "classifying"
     STRUCTURE = "structure"
     READY = "ready"
     ERROR = "error"
+
 
 task_status: Dict[str, str] = {}
 
@@ -35,23 +38,22 @@ def set_status(file_id: str, status: TaskStatus):
     logger.info(f"[STATUS] {file_id} → {status}")
 
 
-# -----------------------------------------------------------
+# ======================================================================
 # ANALYZE ENDPOINT
-# -----------------------------------------------------------
+# ======================================================================
 
 @router.post("/")
 async def analyze_document(file_id: str):
     """
-    Improved document analysis pipeline with status tracking.
+    Full document analysis pipeline with async OCR fallback
+    and detailed status tracking for frontend progress bar.
     """
 
-    logger.info(f"[ANALYZE] Starting for file_id={file_id}")
-
-    # Mark as started
+    logger.info(f"[ANALYZE] Start file_id={file_id}")
     set_status(file_id, TaskStatus.ANALYZING)
 
     # -----------------------------------------------------------
-    # 1) Locate file
+    # 1) Locate the file
     # -----------------------------------------------------------
     file_path: Optional[str] = None
 
@@ -67,50 +69,58 @@ async def analyze_document(file_id: str):
     logger.info(f"[ANALYZE] File located: {file_path}")
 
     # -----------------------------------------------------------
-    # 2) Extract pages
+    # 2) Extract pages (async)
     # -----------------------------------------------------------
     try:
         set_status(file_id, TaskStatus.EXTRACTING)
-        pages = extract_pdf_pages(file_path)
-        logger.info(f"[ANALYZE] Extracted {len(pages)} pages")
+        pages = await extract_pdf_pages(file_path)
+        logger.info(f"[ANALYZE] Pages extracted: {len(pages)}")
     except Exception as e:
         logger.exception(f"[ANALYZE] Page extraction failed: {e}")
         pages = []
 
     # -----------------------------------------------------------
-    # 3) Extract main text
+    # 3) Extract main text (async)
     # -----------------------------------------------------------
-    raw_text = extract_pdf_text(file_path)
+    set_status(file_id, TaskStatus.EXTRACTING_TEXT)
 
-    if not raw_text or not raw_text.strip():
-        logger.warning("[ANALYZE] Text empty, fallback to page text")
+    try:
+        raw_text = await extract_pdf_text(file_path)
+    except Exception as e:
+        logger.error(f"[ANALYZE] Text extraction crashed: {e}")
+        raw_text = ""
+
+    if not raw_text.strip():
+        logger.warning("[ANALYZE] Full text empty → fallback using pages")
 
         if pages:
-            joined = [
-                p.get("text", "") if isinstance(p, dict) else str(p)
-                for p in pages
-            ]
+            joined = []
+            for p in pages:
+                if isinstance(p, dict):
+                    joined.append(p.get("text", ""))
+                else:
+                    joined.append(str(p))
+
             raw_text = "\n\n".join(joined)
 
     if not raw_text.strip():
         set_status(file_id, TaskStatus.ERROR)
-        raise HTTPException(status_code=500, detail="Failed to extract text")
+        raise HTTPException(status_code=500, detail="Failed to extract text from document")
 
     # -----------------------------------------------------------
     # 4) Clean text
     # -----------------------------------------------------------
     cleaned = clean_text(raw_text)
+
     if not cleaned.strip():
         set_status(file_id, TaskStatus.ERROR)
-        raise HTTPException(
-            status_code=500,
-            detail="Text cleaning produced empty output"
-        )
+        raise HTTPException(status_code=500, detail="Text cleaning failed")
 
     # -----------------------------------------------------------
     # 5) Chunk text
     # -----------------------------------------------------------
     set_status(file_id, TaskStatus.CHUNKING)
+
     chunks = chunk_text(cleaned, max_chars=2000, overlap=200)
 
     if not chunks:
@@ -118,31 +128,43 @@ async def analyze_document(file_id: str):
         raise HTTPException(status_code=500, detail="Chunking failed")
 
     # -----------------------------------------------------------
-    # 6) LLM classification
+    # 6) Classification
     # -----------------------------------------------------------
     set_status(file_id, TaskStatus.CLASSIFYING)
-    analysis = classify_document(chunks[0])
-    logger.info(f"[ANALYZE] Classification: {analysis}")
+
+    try:
+        analysis = classify_document(chunks[0])
+    except Exception as e:
+        logger.error(f"[ANALYZE] Classification failed: {e}")
+        set_status(file_id, TaskStatus.ERROR)
+        raise HTTPException(status_code=500, detail="Classification failed")
+
+    logger.info(f"[ANALYZE] Classification OK")
 
     # -----------------------------------------------------------
-    # 7) Extract structure
+    # 7) Extract structure (chapters)
     # -----------------------------------------------------------
     set_status(file_id, TaskStatus.STRUCTURE)
-    structure = extract_structure(file_path) or []
+
+    try:
+        structure = extract_structure(file_path) or []
+    except Exception as e:
+        logger.error(f"[ANALYZE] Structure extraction failed: {e}")
+        structure = []
+
     logger.info(f"[ANALYZE] Structure units: {len(structure)}")
 
     # -----------------------------------------------------------
-    # 8) Basic analytics
+    # 8) Build response
     # -----------------------------------------------------------
     total_len = len(cleaned)
     chunk_count = len(chunks)
     preview = chunks[0][:1000]
 
-    # Done
     set_status(file_id, TaskStatus.READY)
 
     logger.info(
-        f"[ANALYZE] Completed: len={total_len}, chunks={chunk_count}, pages={len(pages)}"
+        f"[ANALYZE] Completed OK → len={total_len}, chunks={chunk_count}, pages={len(pages)}"
     )
 
     return {
@@ -157,13 +179,13 @@ async def analyze_document(file_id: str):
     }
 
 
-# -----------------------------------------------------------
-# STATUS ENDPOINT FOR FRONTEND
-# -----------------------------------------------------------
+# ======================================================================
+# STATUS ENDPOINT
+# ======================================================================
 
 @router.get("/status/{file_id}")
 async def get_status(file_id: str):
     """
-    Returns current status for progress-bar on frontend.
+    Frontend polls this endpoint every second to update progress bar.
     """
     return {"file_id": file_id, "status": task_status.get(file_id, "unknown")}

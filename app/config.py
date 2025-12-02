@@ -37,6 +37,13 @@ ALLOWED_EXTENSIONS = {
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
-# Soft warning instead of crash — prevents local dev crashes
 if not OPENAI_API_KEY:
     print("WARNING: OPENAI_API_KEY is not set. LLM features will not work.")
+
+# ----------------------------
+# OCR.Space configuration
+# ----------------------------
+OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY", "").strip()
+
+if not OCR_SPACE_API_KEY:
+    print("WARNING: OCR_SPACE_API_KEY is not set. OCR for scanned PDFs will be disabled.")
