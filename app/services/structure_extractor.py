@@ -1,96 +1,107 @@
+# app/services/structure_extractor.py
 import re
 from app.services.pdf_extractor import extract_pdf_pages
 from app.utils.logger import logger
 
-
-# ----------------------------------------------------
-# Шаблоны поиска глав и подглав
-# ----------------------------------------------------
+"""
+Hierarchical PDF structure extractor.
+"""
 
 SECTION_PATTERNS = [
-    r"^\s*(Глава\s+\d+)",
-    r"^\s*(Раздел\s+\d+)",
-    r"^\s*(Тема\s+\d+)",
     r"^\s*(Chapter\s+\d+)",
     r"^\s*(Section\s+\d+)",
+    r"^\s*(Part\s+\d+)",
+    r"^\s*(Topic\s+\d+)",
+    r"^\s*(Unit\s+\d+)",
     r"^\s*(§\s*\d+)",
-    r"^\s*(\d+\.\s+[A-Za-zА-Яа-я])",
-    r"^\s*(\d+\.\d+\s+[A-Za-zА-Яа-я])",
+    r"^\s*(\d+(\.\d+){0,3})\s+[A-Za-zА-Яа-я]",
 ]
 
 
 def detect_heading(line: str):
-    """
-    Проверка: является ли строка заголовком?
-    Возвращает:
-      (уровень, текст заголовка) или (None, None)
-    """
+    cleaned = line.strip()
+    if not cleaned:
+        return None, None
+
     for pattern in SECTION_PATTERNS:
-        if re.match(pattern, line.strip()):
-            # уровень зависит от вложенности (1., 1.1, 1.1.1)
-            level = line.count('.') + line.count('§')
-            return level, line.strip()
+        m = re.match(pattern, cleaned)
+        if m:
+            number_part = m.group(1)
+            # 1 → level=1, 1.1 → level=2, 1.1.1 → level=3
+            if number_part and "." in number_part:
+                level = number_part.count(".") + 1
+            else:
+                level = 1
+            return level, cleaned
 
     return None, None
 
 
+def insert_block(root: list, block: dict):
+    level = block["level"]
+
+    if level == 1:
+        root.append(block)
+        return
+
+    parent_level = level - 1
+    stack = root
+
+    while True:
+        last = stack[-1] if stack else None
+        if not last:
+            root.append(block)
+            return
+
+        if last["level"] == parent_level:
+            last["children"].append(block)
+            return
+
+        stack = last["children"]
+
+
 def extract_structure(path: str):
-    """
-    Главная функция.
-    Возвращает список структурных элементов:
-
-    [
-      {
-        "title": "Глава 1. Введение",
-        "level": 1,
-        "start_page": 1,
-        "end_page": 3,
-        "text": "...",
-      },
-      ...
-    ]
-    """
-
     logger.info(f"[STRUCT] extract_structure() for {path}")
 
     pages = extract_pdf_pages(path)
     if not pages:
-        logger.error("[STRUCT] No pages extracted")
+        logger.error("[STRUCT] No pages extracted from PDF")
         return []
 
     structure = []
-    current = None
+    last_block = None
 
     for p in pages:
-        number = p["page"]
-        lines = p["text"].split("\n")
+        page_num = p["page"]
+        text = p.get("text", "") or ""
+        lines = text.split("\n")
 
         for line in lines:
-            level, heading = detect_heading(line)
+            level, title = detect_heading(line)
 
-            if heading:
-                # если была предыдущая глава — закрываем её
-                if current:
-                    current["end_page"] = number - 1
-                    structure.append(current)
+            if title:
+                # Close previous
+                if last_block:
+                    last_block["end_page"] = page_num - 1
 
-                # открываем новую
-                current = {
-                    "title": heading,
-                    "level": level if level > 0 else 1,
-                    "start_page": number,
-                    "end_page": number,
+                block = {
+                    "title": title,
+                    "level": level,
+                    "start_page": page_num,
+                    "end_page": page_num,
+                    "children": [],
                     "text": ""
                 }
 
+                insert_block(structure, block)
+                last_block = block
+
             else:
-                if current:
-                    current["text"] += line + "\n"
+                if last_block:
+                    last_block["text"] += line + "\n"
 
-    # закрываем последнюю главу
-    if current:
-        current["end_page"] = pages[-1]["page"]
-        structure.append(current)
+    if last_block:
+        last_block["end_page"] = pages[-1]["page"]
 
-    logger.info(f"[STRUCT] Extracted {len(structure)} structural units")
+    logger.info(f"[STRUCT] Extracted {len(structure)} top-level sections")
     return structure

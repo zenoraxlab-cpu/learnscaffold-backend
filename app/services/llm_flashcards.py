@@ -1,81 +1,108 @@
 from typing import List, Dict
 import json
 
+from app.services.llm_study import call_llm
+
+
 """
-Сервис для генерации обучающих карточек (flashcards).
+llm_flashcards.py
+
+Flashcard generator for lessons.
+Uses the unified LLM caller from llm_study.py (Responses API).
 """
 
-try:
-    from app.services.llm_study import call_llm  # используем общий LLM-хелпер
-except Exception:
-    # На всякий случай: если import не удался, определим заглушку.
-    def call_llm(prompt: str, model: str = "gpt-4.1-mini") -> str:  # type: ignore
-        print("[flashcards] call_llm fallback: no LLM available")
-        return ""
 
-
+# -------------------------------------------------------------------
+# Prompt builder
+# -------------------------------------------------------------------
 def build_flashcards_prompt(content: str, language: str, count: int) -> str:
+    """
+    Build a strict JSON-only flashcard generation prompt.
+    """
     return f"""
-You are a study assistant.
+You are an educational assistant.
 
-Generate {count} flashcards for spaced repetition based on the content below.
+Generate EXACTLY {count} flashcards in language "{language}".
 
-Requirements:
-- Language: {language}
-- Each card MUST have "q" and "a".
-- Questions should be concise and specific.
-- Answers should be clear and correct.
-- Cover key concepts and typical exam-style questions.
+Each flashcard MUST have the structure:
+{{ "q": "...", "a": "..." }}
 
-Return JSON array ONLY, no explanations:
+Rules:
+- Output MUST be ONLY JSON.
+- No markdown.
+- No comments.
+- No explanations before or after JSON.
+- Questions must be short and precise.
+- Answers must be correct and clear.
+- Cover the key ideas from the content.
+
+Return ONLY a JSON array like:
 [
-  {{ "q": "Question 1", "a": "Answer 1" }},
-  ...
+  {{ "q": "What is X?", "a": "X is ..." }},
+  {{ "q": "Why does Y happen?", "a": "Because ..." }}
 ]
 
-Content:
+CONTENT:
 \"\"\"{content}\"\"\"
 """
 
 
+# -------------------------------------------------------------------
+# JSON parser
+# -------------------------------------------------------------------
 def parse_flashcards_json(raw: str) -> List[Dict]:
+    """
+    Parse a JSON array of flashcards.
+    Returns [] if the response is invalid.
+    """
     try:
-        if not raw.strip():
-            raise ValueError("Empty LLM response for flashcards")
+        if not raw or not raw.strip():
+            raise ValueError("Empty LLM response")
 
         data = json.loads(raw)
-        if not isinstance(data, list):
-            raise ValueError("Flashcards must be a list")
 
-        result: List[Dict] = []
+        if not isinstance(data, list):
+            raise ValueError("Expected a JSON array")
+
+        flashcards: List[Dict] = []
+
         for item in data:
             if not isinstance(item, dict):
                 continue
+
             q = (item.get("q") or "").strip()
             a = (item.get("a") or "").strip()
-            if q and a:
-                result.append({"q": q, "a": a})
 
-        return result
+            if q and a:
+                flashcards.append({"q": q, "a": a})
+
+        return flashcards
 
     except Exception as e:
-        print("[flashcards] parse error:", e)
+        print(f"[FLASHCARDS] Failed to parse JSON: {e}")
         return []
 
 
+# -------------------------------------------------------------------
+# Public API
+# -------------------------------------------------------------------
 def generate_flashcards_for_lesson(
     content: str,
     language: str = "en",
     count: int = 5,
 ) -> List[Dict]:
+    """
+    Generate flashcards for a lesson using the unified LLM caller.
+    """
     if not content.strip():
         return []
 
-    prompt = build_flashcards_prompt(content=content, language=language, count=count)
+    prompt = build_flashcards_prompt(content, language, count)
+
     try:
         raw = call_llm(prompt)
     except Exception as e:
-        print("[flashcards] LLM call failed:", e)
+        print(f"[FLASHCARDS] LLM call failed: {e}")
         return []
 
     if not raw:

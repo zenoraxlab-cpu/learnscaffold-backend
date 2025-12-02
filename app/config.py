@@ -1,18 +1,22 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
-# Базовая директория проекта (папка app/ лежит на уровень ниже)
+# ----------------------------
+# Load .env file (if exists)
+# ----------------------------
+load_dotenv()
+
+# ----------------------------
+# Base directories
+# ----------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Директория для загрузки файлов:
-#   - по умолчанию: ./data в корне проекта
-#   - на проде можно задать через переменную окружения UPLOAD_DIR
+# Upload directory (PDF, EPUB, video, etc.)
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", str(BASE_DIR / "data"))
-
-# Создаём папку, если её нет
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Разрешённые расширения файлов
+# Allowed extensions
 ALLOWED_EXTENSIONS = {
     ".pdf",
     ".epub",
@@ -26,3 +30,13 @@ ALLOWED_EXTENSIONS = {
     ".avi",
     ".mov",
 }
+
+# ----------------------------
+# OpenAI configuration
+# ----------------------------
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+# Soft warning instead of crash — prevents local dev crashes
+if not OPENAI_API_KEY:
+    print("WARNING: OPENAI_API_KEY is not set. LLM features will not work.")
