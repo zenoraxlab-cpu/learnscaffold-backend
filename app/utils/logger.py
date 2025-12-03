@@ -1,21 +1,36 @@
 import logging
-from logging.handlers import RotatingFileHandler
-import os
+import sys
 
-# Создаём директорию для логов
-LOG_DIR = "logs"
-os.makedirs(LOG_DIR, exist_ok=True)
+# -------------------------------------------------------------------
+# Force stdout/stderr unbuffered so Render prints ALL logs
+# -------------------------------------------------------------------
+class StdoutFlusher:
+    def write(self, message):
+        sys.__stdout__.write(message)
+        sys.__stdout__.flush()
 
-# Основной путь логов
-LOG_FILE = os.path.join(LOG_DIR, "backend.log")
+    def flush(self):
+        sys.__stdout__.flush()
 
-# Настройка логгера
-logger = logging.getLogger("studyplan")
+sys.stdout = StdoutFlusher()
+sys.stderr = StdoutFlusher()
+
+# -------------------------------------------------------------------
+# Logging configuration
+# -------------------------------------------------------------------
+logger = logging.getLogger("learnscaffold")
 logger.setLevel(logging.INFO)
 
-# Хендлер с ротацией (каждый файл до 5MB, хранить 3 файла)
-handler = RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=3)
-formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
-handler.setFormatter(formatter)
+handler = logging.StreamHandler(sys.stdout)
+handler.setLevel(logging.INFO)
 
+formatter = logging.Formatter(
+    "%(asctime)s | %(levelname)s | %(message)s",
+    "%Y-%m-%d %H:%M:%S"
+)
+
+handler.setFormatter(formatter)
 logger.addHandler(handler)
+
+# Avoid duplicate logs
+logger.propagate = False
