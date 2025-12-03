@@ -22,59 +22,39 @@ class VideoURLRequest(BaseModel):
 async def analyze_video_url(payload: VideoURLRequest) -> dict[str, Any]:
     """
     Downloads audio from a video URL using yt-dlp, sends it to Whisper,
-    and returns transcription text.
+    and returns the transcribed text.
     """
-    url = str(payload.url)
 
-    # Temporary audio file
-    tmp_dir = tempfile.gettempdir()
-    audio_id = str(uuid.uuid4())
-    audio_path = os.path.join(tmp_dir, f"{audio_id}.m4a")
+    video_url = payload.url
 
-    # Download best audio stream
     try:
+        # Temporary file for audio
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+            temp_audio_path = tmp_file.name
+
+        # Download audio
         ydl_opts = {
             "format": "bestaudio/best",
-            "outtmpl": audio_path,
+            "outtmpl": temp_audio_path,
             "quiet": True,
-            "no_warnings": True,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to download audio: {e}")
+            ydl.download([video_url])
 
-    if not os.path.exists(audio_path):
-        raise HTTPException(status_code=500, detail="Audio file was not created")
-
-    # Transcribe with Whisper
-    try:
-        with open(audio_path, "rb") as f:
+        # Send audio to Whisper (OpenAI)
+        with open(temp_audio_path, "rb") as audio_file:
             transcript = client.audio.transcriptions.create(
-                model="gpt-4o-mini-transcribe",
-                file=f,
+                model="whisper-1",
+                file=audio_file
             )
+
+        os.remove(temp_audio_path)
+
+        return {
+            "status": "success",
+            "transcript": transcript.text,
+        }
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ASR failed: {e}")
-    finally:
-        # Remove temp file
-        try:
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
-        except Exception:
-            pass
-
-    text = getattr(transcript, "text", "")
-
-    if not text:
-        raise HTTPException(status_code=500, detail="Empty transcript received")
-
-    return {
-        "status": "success",
-        "mode": "video_url",
-        "source_url": url,
-        "text": text,
-        "length": len(text),
-    }
-
+        raise HTTPException(status_code=500, detail=str(e))
