@@ -11,6 +11,10 @@ from app.services.classifier import classify_document
 from app.services.structure_extractor import extract_structure
 from app.config import UPLOAD_DIR
 
+# NEW ↓
+from app.services.language import detect_language
+# END NEW ↑
+
 router = APIRouter()
 
 
@@ -105,6 +109,16 @@ async def analyze_document(file_id: str):
         raise HTTPException(status_code=500, detail="Text cleaning failed")
 
     # -----------------------------------------------------------
+    # 4.1 NEW — Language detection
+    # -----------------------------------------------------------
+    try:
+        language = detect_language(cleaned)
+        logger.info(f"[ANALYZE] Language detected → {language}")
+    except Exception as e:
+        logger.error(f"[ANALYZE] Language detection failed: {e}")
+        language = "en"
+
+    # -----------------------------------------------------------
     # 5) Chunk text
     # -----------------------------------------------------------
     set_status(file_id, TaskStatus.CHUNKING)
@@ -146,7 +160,7 @@ async def analyze_document(file_id: str):
     set_status(file_id, TaskStatus.READY)
 
     logger.info(
-        f"[ANALYZE] DONE → len={len(cleaned)}, chunks={len(chunks)}, pages={len(pages)}"
+        f"[ANALYZE] DONE → len={len(cleaned)}, chunks={len(chunks)}, pages={len(pages)}, lang={language}"
     )
 
     return {
@@ -158,6 +172,7 @@ async def analyze_document(file_id: str):
         "first_chunk_preview": chunks[0][:1000],
         "analysis": analysis,
         "structure": structure,
+        "language": language,  # NEW FIELD
     }
 
 
