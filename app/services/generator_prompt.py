@@ -1,39 +1,53 @@
+# app/services/generator_prompt.py
+
+LANG_MAP = {
+    "en": "English",
+    "ru": "Russian",
+    "es": "Spanish",
+    "de": "German",
+    "fr": "French"
+}
+
 def build_prompt(analysis: dict, days: int, language: str):
     """
-    Build prompt for studyplan generation.
-    By default everything is generated in English.
+    Create structured prompt for generating the study plan.
+    The study plan must ALWAYS be generated in the selected language.
     """
 
-    lang_map = {
-        "en": "English",
-        "ru": "Russian",
-        "es": "Spanish",
-        "de": "German",
-        "fr": "French"
-    }
-
-    target_language = lang_map.get(language, "English")
+    lang_name = LANG_MAP.get(language, "English")
 
     system_message = f"""
 You are an AI that generates structured study plans.
-
-MANDATORY RULES:
-- The study plan MUST be written strictly in {target_language}.
-- Do NOT translate into any other language.
-- Output must be clean, structured JSON.
-
+You MUST respond strictly in {lang_name}.
+Do NOT translate to any other language.
+Do NOT detect language. The output language is explicitly chosen by the user.
+Your job is only to generate a detailed, high-quality study program.
 """
 
+    # Summary of contents user uploaded
+    analysis_summary = analysis.get("analysis", {})
+    structure_summary = analysis.get("structure", [])
+    file_description = analysis_summary.get("short_description", "")
+
     user_message = f"""
-Generate a {days}-day study plan based on the following document analysis:
+Generate a {days}-day study plan using ONLY the following extracted data:
 
-{analysis}
+CONTENT SUMMARY:
+{analysis_summary}
 
-Your output must contain exactly {days} lessons.
-Use consistent structure: title, goals, theory, practice, summary, review questions.
+STRUCTURE (chapters, sections):
+{structure_summary}
+
+DOCUMENT DESCRIPTION:
+{file_description}
+
+Rules:
+- Write everything in {lang_name}.
+- Each day must include: goals, theory, practice, summary.
+- Return clean JSON with a list "days": [...]
 """
 
     return [
         {"role": "system", "content": system_message},
-        {"role": "user", "content": user_message}
+        {"role": "user",    "content": user_message.strip()}
     ]

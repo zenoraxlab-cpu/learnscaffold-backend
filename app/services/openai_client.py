@@ -1,33 +1,28 @@
-import os
-from openai import OpenAI
+# app/services/openai_client.py
+
+from openai import AsyncOpenAI
 from app.utils.logger import logger
 
-API_KEY = os.getenv("OPENAI_API_KEY")
-
-if not API_KEY:
-    raise RuntimeError("OPENAI_API_KEY is missing")
-
-client = OpenAI(api_key=API_KEY)
+client = AsyncOpenAI()   # API key is taken from env OPENAI_API_KEY
 
 
-async def run_chat_completion(messages: list) -> str:
+async def run_chat_completion(messages: list, model: str = "gpt-4.1"):
     """
-    Unified call for OpenAI chat completions.
+    Run async chat completion and return text content.
     """
+
+    logger.info(f"[OpenAI] Calling model={model}")
+
     try:
-        logger.info("[OPENAI] Request started")
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        resp = await client.chat.completions.create(
+            model=model,
             messages=messages,
             temperature=0.4,
-            max_tokens=8000
+            max_tokens=4096
         )
 
-        logger.info("[OPENAI] Request completed")
-
-        return response.choices[0].message["content"]
+        return resp.choices[0].message.content
 
     except Exception as e:
-        logger.error(f"[OPENAI] Error: {e}")
+        logger.error(f"[OpenAI] ChatCompletion error: {e}")
         raise
