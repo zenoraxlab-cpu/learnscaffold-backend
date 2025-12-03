@@ -9,11 +9,9 @@ from app.services.text_cleaner import clean_text
 from app.services.chunker import chunk_text
 from app.services.classifier import classify_document
 from app.services.structure_extractor import extract_structure
-from app.config import UPLOAD_DIR
-
-# NEW ↓
 from app.services.language import detect_language
-# END NEW ↑
+from app.services.notifier import notify_admin
+from app.config import UPLOAD_DIR
 
 router = APIRouter()
 
@@ -48,6 +46,7 @@ def set_status(file_id: str, status: TaskStatus):
 
 @router.post("/")
 async def analyze_document(file_id: str):
+
     logger.info(f"[ANALYZE] Start file_id={file_id}")
     set_status(file_id, TaskStatus.ANALYZING)
 
@@ -62,13 +61,14 @@ async def analyze_document(file_id: str):
             break
 
     if not file_path:
+        await notify_admin(f"❌ File not found during analysis\nfile_id={file_id}")
         set_status(file_id, TaskStatus.ERROR)
         raise HTTPException(status_code=404, detail="File not found")
 
     logger.info(f"[ANALYZE] File located → {file_path}")
 
     # -----------------------------------------------------------
-    # 2) Extract pages (per-page text, async)
+    # 2) Extract pages (OCR / per-page text)
     # -----------------------------------------------------------
     try:
         set_status(file_id, TaskStatus.EXTRACTING)
@@ -77,9 +77,12 @@ async def analyze_document(file_id: str):
     except Exception as e:
         logger.exception(f"[ANALYZE] extract_pdf_pages failed: {e}")
         pages = []
+        await notify_admin(
+            f"❌ ANALYZE ERROR (extract_pdf_pages)\nfile_id={file_id}\n{e}"
+        )
 
     # -----------------------------------------------------------
-    # 3) Extract full text (async)
+    # 3) Extract full text (main text extraction)
     # -----------------------------------------------------------
     set_status(file_id, TaskStatus.EXTRACTING_TEXT)
 
@@ -89,14 +92,20 @@ async def analyze_document(file_id: str):
     except Exception as e:
         logger.error(f"[ANALYZE] extract_pdf_text crashed: {e}")
         raw_text = ""
+        await notify_admin(
+            f"❌ ANALYZE ERROR (extract_pdf_text)\nfile_id={file_id}\n{e}"
+        )
 
-    # Fallback: join per-page text
+    # Fallback: join per-page OCR text
     if not raw_text.strip():
         logger.warning("[ANALYZE] Text empty → fallback to pages[]")
         if pages:
             raw_text = "\n\n".join([p.get("text", "") for p in pages])
 
     if not raw_text.strip():
+        await notify_admin(
+            f"❌ ANALYZE ERROR: No text extracted\nfile_id={file_id}"
+        )
         set_status(file_id, TaskStatus.ERROR)
         raise HTTPException(status_code=500, detail="Failed to extract text from document")
 
@@ -105,15 +114,18 @@ async def analyze_document(file_id: str):
     # -----------------------------------------------------------
     cleaned = clean_text(raw_text)
     if not cleaned.strip():
+        await notify_admin(
+            f"❌ ANALYZE ERROR (clean_text returned empty)\nfile_id={file_id}"
+        )
         set_status(file_id, TaskStatus.ERROR)
         raise HTTPException(status_code=500, detail="Text cleaning failed")
 
     # -----------------------------------------------------------
-    # 4.1 NEW — Language detection
+    # 4.1 Language detection
     # -----------------------------------------------------------
     try:
         language = detect_language(cleaned)
-        logger.info(f"[ANALYZE] Language detected → {language}")
+        logger.info(f"[ANALYZE] Language → {language}")
     except Exception as e:
         logger.error(f"[ANALYZE] Language detection failed: {e}")
         language = "en"
@@ -125,34 +137,41 @@ async def analyze_document(file_id: str):
 
     chunks = chunk_text(cleaned, max_chars=2000, overlap=200)
     if not chunks:
+        await notify_admin(
+            f"❌ ANALYZE ERROR (chunk_text produced 0 chunks)\nfile_id={file_id}"
+        )
         set_status(file_id, TaskStatus.ERROR)
         raise HTTPException(status_code=500, detail="Chunking failed")
 
     # -----------------------------------------------------------
-    # 6) Document classification
+    # 6) Classification
     # -----------------------------------------------------------
     set_status(file_id, TaskStatus.CLASSIFYING)
 
     try:
         analysis = classify_document(chunks[0])
     except Exception as e:
-        logger.error(f"[ANALYZE] classify_document failed: {e}")
+        await notify_admin(
+            f"❌ ANALYZE ERROR (classify_document)\nfile_id={file_id}\n{e}"
+        )
         set_status(file_id, TaskStatus.ERROR)
         raise HTTPException(status_code=500, detail="Document classification failed")
 
     logger.info("[ANALYZE] Classification OK")
 
     # -----------------------------------------------------------
-    # 7) Extract structure (chapters)
+    # 7) Extract structure
     # -----------------------------------------------------------
     set_status(file_id, TaskStatus.STRUCTURE)
 
     try:
         structure = extract_structure(file_path) or []
-        logger.info(f"[ANALYZE] Structure extracted: {len(structure)} units")
     except Exception as e:
         logger.error(f"[ANALYZE] Structure extractor failed: {e}")
         structure = []
+        await notify_admin(
+            f"⚠️ ANALYZE WARNING: structure extraction failed\nfile_id={file_id}\n{e}"
+        )
 
     # -----------------------------------------------------------
     # 8) Final response
@@ -169,16 +188,11 @@ async def analyze_document(file_id: str):
         "total_length": len(cleaned),
         "chunks_count": len(chunks),
         "pages": len(pages),
-        "first_chunk_preview": chunks[0][:1000],
         "analysis": analysis,
         "structure": structure,
-        "language": language,  # NEW FIELD
+        "language": language,
     }
 
-
-# ======================================================================
-# STATUS ENDPOINT (frontend polling)
-# ======================================================================
 
 @router.get("/status/{file_id}")
 async def get_status(file_id: str):
