@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 import os
 from typing import Optional, Dict
 from enum import Enum
@@ -9,11 +10,25 @@ from app.services.text_cleaner import clean_text
 from app.services.chunker import chunk_text
 from app.services.classifier import classify_document
 from app.services.structure_extractor import extract_structure
+<<<<<<< HEAD
 from app.services.language import detect_language
 from app.services.notifier import notify_admin
 from app.config import UPLOAD_DIR
+=======
+from app.config import UPLOAD_DIR
+from app.services.language import detect_language
+
+>>>>>>> 04f4ec7 (Add email sending, Telegram bot, PDF graphics, language detection, error handling)
 
 router = APIRouter()
+
+
+# ======================================================================
+# REQUEST MODEL (IMPORTANT FIX)
+# ======================================================================
+
+class AnalyzeRequest(BaseModel):
+    file_id: str
 
 
 # ======================================================================
@@ -45,7 +60,12 @@ def set_status(file_id: str, status: TaskStatus):
 # ======================================================================
 
 @router.post("/")
+<<<<<<< HEAD
 async def analyze_document(file_id: str):
+=======
+async def analyze_document(payload: AnalyzeRequest):
+    file_id = payload.file_id
+>>>>>>> 04f4ec7 (Add email sending, Telegram bot, PDF graphics, language detection, error handling)
 
     logger.info(f"[ANALYZE] Start file_id={file_id}")
     set_status(file_id, TaskStatus.ANALYZING)
@@ -68,7 +88,11 @@ async def analyze_document(file_id: str):
     logger.info(f"[ANALYZE] File located → {file_path}")
 
     # -----------------------------------------------------------
+<<<<<<< HEAD
     # 2) Extract pages (OCR / per-page text)
+=======
+    # 2) Extract pages (per-page text)
+>>>>>>> 04f4ec7 (Add email sending, Telegram bot, PDF graphics, language detection, error handling)
     # -----------------------------------------------------------
     try:
         set_status(file_id, TaskStatus.EXTRACTING)
@@ -82,7 +106,11 @@ async def analyze_document(file_id: str):
         )
 
     # -----------------------------------------------------------
+<<<<<<< HEAD
     # 3) Extract full text (main text extraction)
+=======
+    # 3) Extract full text
+>>>>>>> 04f4ec7 (Add email sending, Telegram bot, PDF graphics, language detection, error handling)
     # -----------------------------------------------------------
     set_status(file_id, TaskStatus.EXTRACTING_TEXT)
 
@@ -96,11 +124,13 @@ async def analyze_document(file_id: str):
             f"❌ ANALYZE ERROR (extract_pdf_text)\nfile_id={file_id}\n{e}"
         )
 
+<<<<<<< HEAD
     # Fallback: join per-page OCR text
+=======
+>>>>>>> 04f4ec7 (Add email sending, Telegram bot, PDF graphics, language detection, error handling)
     if not raw_text.strip():
         logger.warning("[ANALYZE] Text empty → fallback to pages[]")
-        if pages:
-            raw_text = "\n\n".join([p.get("text", "") for p in pages])
+        raw_text = "\n\n".join([p.get("text", "") for p in pages]) if pages else ""
 
     if not raw_text.strip():
         await notify_admin(
@@ -121,7 +151,11 @@ async def analyze_document(file_id: str):
         raise HTTPException(status_code=500, detail="Text cleaning failed")
 
     # -----------------------------------------------------------
+<<<<<<< HEAD
     # 4.1 Language detection
+=======
+    # 4.1 Detect language
+>>>>>>> 04f4ec7 (Add email sending, Telegram bot, PDF graphics, language detection, error handling)
     # -----------------------------------------------------------
     try:
         language = detect_language(cleaned)
@@ -157,10 +191,12 @@ async def analyze_document(file_id: str):
         set_status(file_id, TaskStatus.ERROR)
         raise HTTPException(status_code=500, detail="Document classification failed")
 
-    logger.info("[ANALYZE] Classification OK")
-
     # -----------------------------------------------------------
+<<<<<<< HEAD
     # 7) Extract structure
+=======
+    # 7) Structure extraction
+>>>>>>> 04f4ec7 (Add email sending, Telegram bot, PDF graphics, language detection, error handling)
     # -----------------------------------------------------------
     set_status(file_id, TaskStatus.STRUCTURE)
 
@@ -174,13 +210,9 @@ async def analyze_document(file_id: str):
         )
 
     # -----------------------------------------------------------
-    # 8) Final response
+    # 8) Response
     # -----------------------------------------------------------
     set_status(file_id, TaskStatus.READY)
-
-    logger.info(
-        f"[ANALYZE] DONE → len={len(cleaned)}, chunks={len(chunks)}, pages={len(pages)}, lang={language}"
-    )
 
     return {
         "status": "ok",
@@ -194,6 +226,13 @@ async def analyze_document(file_id: str):
     }
 
 
+<<<<<<< HEAD
+=======
+# ======================================================================
+# STATUS ENDPOINT
+# ======================================================================
+
+>>>>>>> 04f4ec7 (Add email sending, Telegram bot, PDF graphics, language detection, error handling)
 @router.get("/status/{file_id}")
 async def get_status(file_id: str):
     return {"file_id": file_id, "status": task_status.get(file_id, "unknown")}
