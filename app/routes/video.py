@@ -8,93 +8,73 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, HttpUrl
 from openai import OpenAI
 
-# Клиент OpenAI. Берёт ключ из переменной окружения OPENAI_API_KEY
+# OpenAI client (expects OPENAI_API_KEY in environment)
 client = OpenAI()
 
 router = APIRouter()
 
 
-# ---------------------------
-# Pydantic-модели запросов
-# ---------------------------
-
 class VideoURLRequest(BaseModel):
     url: HttpUrl
 
 
-class VideoPlanRequest(BaseModel):
-    url: HttpUrl
-    target_days: int | None = None  # на будущее, под генерацию плана
-
-
-# ---------------------------
-# Вспомогательные функции
-# ---------------------------
-
-def _download_audio_from_url(url: str) -> str:
+@router.post("/analyze_url")
+async def analyze_video_url(payload: VideoURLRequest) -> dict[str, Any]:
     """
-    Скачивает только аудиодорожку по URL с помощью yt-dlp.
-    Возвращает путь к временному аудиофайлу.
+    Downloads audio from a video URL using yt-dlp, sends it to Whisper,
+    and returns transcription text.
     """
+    url = str(payload.url)
+
+    # Temporary audio file
     tmp_dir = tempfile.gettempdir()
     audio_id = str(uuid.uuid4())
     audio_path = os.path.join(tmp_dir, f"{audio_id}.m4a")
 
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": audio_path,
-        "quiet": True,
-        "no_warnings": True,
-    }
-
+    # Download best audio stream
     try:
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "outtmpl": audio_path,
+            "quiet": True,
+            "no_warnings": True,
+        }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to download audio: {e}")
 
     if not os.path.exists(audio_path):
-        raise HTTPException(status_code=500, detail="Audio file not created")
+        raise HTTPException(status_code=500, detail="Audio file was not created")
 
-    return audio_path
-
-
-def _transcribe_audio_file(audio_path: str) -> str:
-    """
-    Отправляет аудиофайл в Whisper API (OpenAI) и возвращает текст.
-    Всегда старается удалить временный файл.
-    """
+    # Transcribe with Whisper
     try:
         with open(audio_path, "rb") as f:
-            # Самая надёжная модель для транскриба сейчас — whisper-1
             transcript = client.audio.transcriptions.create(
-                model="whisper-1",
+                model="gpt-4o-mini-transcribe",
                 file=f,
             )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"ASR failed: {e}")
     finally:
-        # Пытаемся удалить временный файл, но не падаем, если не получилось
+        # Remove temp file
         try:
             if os.path.exists(audio_path):
                 os.remove(audio_path)
         except Exception:
             pass
 
-    text = getattr(transcript, "text", "") or ""
+    text = getattr(transcript, "text", "")
+
     if not text:
-        raise HTTPException(status_code=500, detail="Empty transcript from ASR")
+        raise HTTPException(status_code=500, detail="Empty transcript received")
 
-    return text
+    return {
+        "status": "success",
+        "mode": "video_url",
+        "source_url": url,
+        "text": text,
+        "length": len(text),
+    }
 
-
-# ---------------------------
-# Публичные эндпоинты
-# ---------------------------
-
-@router.post("/analyze_url")
-async def analyze_video_url(payload: VideoURLRequest) -> dict[str, Any]:
-    """
-    БАЗОВЫЙ ЭНДПОИНТ.
-    Принимает URL видео (YouTube, Vimeo и др.),
-    скачивает ТОЛЬКО аудиодорожку, отправляет
