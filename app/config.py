@@ -52,3 +52,13 @@ if not GOOGLE_OCR_API_KEY:
 # Other external services (placeholders)
 # ----------------------------
 OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY", "")
+
+# ----------------------------
+# CORS Allowed Origins (REQUIRED)
+# ----------------------------
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "https://learnscaffold.com",
+    "https://www.learnscaffold.com",
+    "https://learnscaffold-frontend.vercel.app",
+]
