@@ -1,18 +1,14 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 import os
-import json
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 from enum import Enum
 
 from app.utils.logger import logger
-from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
+from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages, extract_pdf_text_google_ocr
 from app.services.text_cleaner import clean_text
 from app.services.chunker import chunk_text
 from app.services.classifier import classify_document
 from app.services.structure_extractor import extract_structure
-from app.services.language import detect_language
-from app.services.notifier import notify_admin
 from app.config import UPLOAD_DIR
 
 router = APIRouter()
@@ -34,195 +30,162 @@ class TaskStatus(str, Enum):
 
 
 task_status: Dict[str, str] = {}
+task_msg: Dict[str, str] = {}
+
+# ← NEW: detailed progress, including OCR page counters
+task_status_details: Dict[str, Dict[str, Any]] = {}
 
 
-def set_status(file_id: str, status: TaskStatus):
+def set_status(file_id: str, status: TaskStatus, msg: Optional[str] = None, details: Optional[Dict[str, Any]] = None):
     task_status[file_id] = status
-    logger.info(f"[STATUS] {file_id} → {status}")
+    if msg:
+        task_msg[file_id] = msg
+    if details:
+        task_status_details[file_id] = details
+
+    logger.info(f"[STATUS] {file_id} → {status} {msg if msg else ''}")
+
+
+@router.get("/analyze/status/{file_id}")
+async def get_status(file_id: str):
+    return {
+        "file_id": file_id,
+        "status": task_status.get(file_id),
+        "message": task_msg.get(file_id),
+        "details": task_status_details.get(file_id),
+    }
 
 
 # ======================================================================
-# REQUEST MODEL
+# ANALYSIS PIPELINE
 # ======================================================================
 
-class AnalyzeRequest(BaseModel):
-    file_id: str
+@router.post("/analyze/")
+async def analyze(payload: dict):
+    file_id = payload.get("file_id")
+    if not file_id:
+        raise HTTPException(status_code=400, detail="Missing file_id")
 
-
-# ======================================================================
-# MAIN ANALYSIS ENDPOINT
-# ======================================================================
-
-@router.post("/")
-async def analyze_document(payload: AnalyzeRequest):
-    file_id = payload.file_id
+    input_path = os.path.join(UPLOAD_DIR, f"{file_id}.pdf")
+    if not os.path.exists(input_path):
+        raise HTTPException(status_code=404, detail="File not found")
 
     logger.info(f"[ANALYZE] Start file_id={file_id}")
     set_status(file_id, TaskStatus.ANALYZING)
 
-    # -----------------------------------------------------------
-    # 1) Locate file
-    # -----------------------------------------------------------
-    file_path: Optional[str] = None
-
-    for fname in os.listdir(UPLOAD_DIR):
-        if fname.startswith(file_id):
-            file_path = os.path.join(UPLOAD_DIR, fname)
-            break
-
-    if not file_path:
-        await notify_admin(f"❌ File not found during analysis\nfile_id={file_id}")
-        set_status(file_id, TaskStatus.ERROR)
-        raise HTTPException(status_code=404, detail="File not found")
-
-    logger.info(f"[ANALYZE] File located → {file_path}")
-
-    # -----------------------------------------------------------
-    # 2) Extract pages
-    # -----------------------------------------------------------
     try:
+        # ---------------------------------------------------------
+        # Extract Pages (metadata-level extraction)
+        # ---------------------------------------------------------
         set_status(file_id, TaskStatus.EXTRACTING)
-        pages = await extract_pdf_pages(file_path)
-        logger.info(f"[ANALYZE] extract_pdf_pages OK: {len(pages)} pages")
-    except Exception as e:
-        logger.exception(f"[ANALYZE] extract_pdf_pages failed: {e}")
-        pages = []
-        await notify_admin(
-            f"❌ ANALYZE ERROR (extract_pdf_pages)\nfile_id={file_id}\n{e}"
-        )
+        logger.info(f"[PDF] extract_pdf_pages: {input_path}")
 
-    # -----------------------------------------------------------
-    # 3) Extract full text
-    # -----------------------------------------------------------
-    set_status(file_id, TaskStatus.EXTRACTING_TEXT)
+        pages = extract_pdf_pages(input_path)
 
-    try:
-        raw_text = await extract_pdf_text(file_path)
-        logger.info(f"[ANALYZE] extract_pdf_text OK ({len(raw_text)} chars)")
-    except Exception as e:
-        logger.error(f"[ANALYZE] extract_pdf_text crashed: {e}")
-        raw_text = ""
-        await notify_admin(
-            f"❌ ANALYZE ERROR (extract_pdf_text)\nfile_id={file_id}\n{e}"
-        )
+        page_total = len(pages)
+        logger.info(f"[PDF] PyMuPDF per-page OK ({page_total} pages)")
 
-    if not raw_text.strip() and pages:
-        raw_text = "\n\n".join([p.get("text", "") for p in pages])
+        # ---------------------------------------------------------
+        # Text Extraction (OCR or normal)
+        # ---------------------------------------------------------
+        set_status(file_id, TaskStatus.EXTRACTING_TEXT)
 
-    if not raw_text.strip():
-        await notify_admin(
-            f"❌ ANALYZE ERROR: No text extracted\nfile_id={file_id}"
-        )
-        set_status(file_id, TaskStatus.ERROR)
-        raise HTTPException(status_code=500, detail="Failed to extract text")
+        if page_total > 0 and pages[0].get("ocr_needed", False):
+            logger.info("[PDF] Using GOOGLE OCR mode")
 
-    # -----------------------------------------------------------
-    # 4) Clean text
-    # -----------------------------------------------------------
-    cleaned = clean_text(raw_text)
+            full_text, ocr_total = "", len(pages)
 
-    if not cleaned.strip():
-        await notify_admin(
-            f"❌ ANALYZE ERROR (clean_text returned empty)\nfile_id={file_id}"
-        )
-        set_status(file_id, TaskStatus.ERROR)
-        raise HTTPException(status_code=500, detail="Text cleaning failed")
+            for idx, img_data in enumerate(pages):
+                text = extract_pdf_text_google_ocr(img_data["image"])
 
-    # -----------------------------------------------------------
-    # 4.1 Detect language
-    # -----------------------------------------------------------
-    try:
-        language = detect_language(cleaned)
-        logger.info(f"[ANALYZE] Language → {language}")
-    except Exception as e:
-        logger.error(f"[ANALYZE] Language detection failed: {e}")
-        language = "en"
+                full_text += text + "\n"
 
-    # -----------------------------------------------------------
-    # 5) Chunk text
-    # -----------------------------------------------------------
-    set_status(file_id, TaskStatus.CHUNKING)
+                # PROGRESS UPDATE
+                set_status(
+                    file_id,
+                    TaskStatus.EXTRACTING_TEXT,
+                    details={"page_current": idx + 1, "page_total": ocr_total}
+                )
 
-    chunks = chunk_text(cleaned, max_chars=2000, overlap=200)
-    if not chunks:
-        await notify_admin(
-            f"❌ ANALYZE ERROR (chunk_text returned 0)\nfile_id={file_id}"
-        )
-        set_status(file_id, TaskStatus.ERROR)
-        raise HTTPException(status_code=500, detail="Chunking failed")
+                logger.info(f"[GOOGLE OCR] Page {idx+1}/{ocr_total} OK, {len(text)} chars")
 
-    # -----------------------------------------------------------
-    # 6) Classification
-    # -----------------------------------------------------------
-    set_status(file_id, TaskStatus.CLASSIFYING)
+        else:
+            logger.info("[PDF] Normal text extraction")
+            full_text = extract_pdf_text(input_path)
 
-    try:
-        analysis = classify_document(chunks[0])
-    except Exception as e:
-        await notify_admin(
-            f"❌ ANALYZE ERROR (classify_document)\nfile_id={file_id}\n{e}"
-        )
-        set_status(file_id, TaskStatus.ERROR)
-        raise HTTPException(status_code=500, detail="Classification failed")
+        logger.info(f"[ANALYZE] extract_pdf_text OK ({len(full_text)} chars)")
 
-    # -----------------------------------------------------------
-    # 7) Structure extraction
-    # -----------------------------------------------------------
-    set_status(file_id, TaskStatus.STRUCTURE)
+        # ---------------------------------------------------------
+        # Clean text
+        # ---------------------------------------------------------
+        logger.info("Text cleaning started")
+        cleaned = clean_text(full_text)
+        logger.info(f"Text cleaning finished, length={len(cleaned)}")
 
-    try:
-        structure = extract_structure(file_path) or []
-    except Exception as e:
-        logger.error(f"[ANALYZE] Structure extractor failed: {e}")
-        structure = []
-        await notify_admin(
-            f"⚠️ ANALYZE WARNING: structure extraction failed\nfile_id={file_id}\n{e}"
-        )
+        # ---------------------------------------------------------
+        # Detect language
+        # ---------------------------------------------------------
+        logger.info("Detecting language…")
+        from langdetect import detect
+        document_language = detect(cleaned[:5000]) if cleaned.strip() else "en"
+        logger.info(f"[ANALYZE] Language → {document_language}")
 
-    # -----------------------------------------------------------
-    # 8) Save analysis for /generate
-    # -----------------------------------------------------------
-    analysis_file = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
+        # ---------------------------------------------------------
+        # Chunking
+        # ---------------------------------------------------------
+        set_status(file_id, TaskStatus.CHUNKING)
+        chunks = chunk_text(cleaned)
+        logger.info(f"[ANALYZE] chunking OK → {len(chunks)} chunks")
 
-    analysis_payload = {
-        "summary": analysis.get("summary", ""),
-        "document_type": analysis.get("document_type", "document"),
-        "main_topics": analysis.get("main_topics", []),
-        "structure": structure,
-        "language": language,
-    }
+        # ---------------------------------------------------------
+        # Classification
+        # ---------------------------------------------------------
+        set_status(file_id, TaskStatus.CLASSIFYING)
+        logger.info("[CLASSIFIER] Starting LLM classification")
 
-    try:
-        with open(analysis_file, "w", encoding="utf-8") as f:
-            json.dump(analysis_payload, f, ensure_ascii=False, indent=2)
+        classification = classify_document(chunks)
+        logger.info("[CLASSIFIER] Classification completed")
 
-        logger.info(f"[ANALYZE] Saved analysis file → {analysis_file}")
+        # ---------------------------------------------------------
+        # Structure detection
+        # ---------------------------------------------------------
+        set_status(file_id, TaskStatus.STRUCTURE)
+
+        structure = extract_structure(cleaned)
+        logger.info(f"[STRUCTURE] Units found: {len(structure)}")
+
+        # ---------------------------------------------------------
+        # Save analysis JSON
+        # ---------------------------------------------------------
+        save_path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
+        analysis_data = {
+            "file_id": file_id,
+            "document_type": classification.get("document_type", ""),
+            "main_topics": classification.get("main_topics", []),
+            "summary": classification.get("summary", ""),
+            "recommended_days": classification.get("recommended_days", 7),
+            "structure": structure,
+            "document_language": document_language,    # ← NEW!
+            "length_chars": len(cleaned),
+            "pages": page_total
+        }
+
+        import json
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(analysis_data, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"[ANALYZE] Saved analysis file → {save_path}")
+
+        # ---------------------------------------------------------
+        # Done
+        # ---------------------------------------------------------
+        set_status(file_id, TaskStatus.READY)
+        logger.info(f"[ANALYZE] DONE → len={len(cleaned)}, chunks={len(chunks)}, pages={page_total}, lang={document_language}")
+
+        return analysis_data
 
     except Exception as e:
-        logger.error(f"[ANALYZE] Failed to save analysis file: {e}")
-
-    # -----------------------------------------------------------
-    # 9) Done
-    # -----------------------------------------------------------
-    set_status(file_id, TaskStatus.READY)
-
-    logger.info(
-        f"[ANALYZE] DONE → len={len(cleaned)}, chunks={len(chunks)}, "
-        f"pages={len(pages)}, lang={language}"
-    )
-
-    return {
-        "status": "ok",
-        "file_id": file_id,
-        "total_length": len(cleaned),
-        "chunks_count": len(chunks),
-        "pages": len(pages),
-        "analysis": analysis,
-        "structure": structure,
-        "language": language,
-    }
-
-
-@router.get("/status/{file_id}")
-async def get_status(file_id: str):
-    return {"file_id": file_id, "status": task_status.get(file_id, "unknown")}
+        logger.error("[ANALYZE] ERROR")
+        logger.exception(e)
+        set_status(file_id, TaskStatus.ERROR, msg=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
