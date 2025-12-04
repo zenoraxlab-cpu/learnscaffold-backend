@@ -10,8 +10,10 @@ from app.routes import (
     studyplan,
     plan_pdf,
 )
+
 from app.utils.logger import logger
 from app.utils.error_handler import log_exceptions
+
 
 # -------------------------------------------------------------------
 # FastAPI application
@@ -32,7 +34,7 @@ app.middleware("http")(log_exceptions)
 # -------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # adjust later if needed
+    allow_origins=["*"],     # можно ограничить позже
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,16 +42,17 @@ app.add_middleware(
 
 logger.info("Backend started")
 
+
 # -------------------------------------------------------------------
 # Routers
 # -------------------------------------------------------------------
-app.include_router(upload.router, prefix="/upload", tags=["Upload"])
-app.include_router(analyze.router, prefix="/analyze", tags=["Analyze"])
-app.include_router(generate.router, prefix="/generate", tags=["Generate"])
-app.include_router(video.router, prefix="/video", tags=["Video"])
-app.include_router(health.router, prefix="/health", tags=["Health"])
-app.include_router(studyplan.router, prefix="/studyplan", tags=["StudyPlan"])
-app.include_router(plan_pdf.router, prefix="/plan", tags=["Plan"])
+app.include_router(upload.router,    prefix="/upload",   tags=["Upload"])
+app.include_router(analyze.router,   prefix="/analyze",  tags=["Analyze"])
+app.include_router(generate.router,  prefix="/generate", tags=["Generate"])
+app.include_router(video.router,     prefix="/video",    tags=["Video"])
+app.include_router(health.router,    prefix="/health",   tags=["Health"])
+app.include_router(studyplan.router, prefix="/studyplan",tags=["StudyPlan"])
+app.include_router(plan_pdf.router,  prefix="/plan",     tags=["Plan"])
 
 
 # -------------------------------------------------------------------
