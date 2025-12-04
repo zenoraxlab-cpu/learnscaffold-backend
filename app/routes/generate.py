@@ -9,71 +9,72 @@ router = APIRouter()
 
 DATA_DIR = "/opt/render/project/src/data"
 
-
 class GenerateRequest(BaseModel):
     file_id: str
     days: int
-    language: str
+    language: str   # пока игнорируется, но нужен для фронтенда
 
 
 @router.post("/generate/")
 async def generate(request: GenerateRequest):
     file_id = request.file_id
     days = request.days
-    language = request.language
+    language = request.language   # может использоваться позже для выбора модели
 
     logger.info(f"[GENERATE] Start → file_id='{file_id}' days={days} language='{language}'")
 
-    # ---------------------------------------------
-    # Load saved analysis from *_analysis.json
-    # ---------------------------------------------
+    # ------------------------------------------------------------
+    # Load analysis
+    # ------------------------------------------------------------
     analysis_path = os.path.join(DATA_DIR, f"{file_id}_analysis.json")
 
     if not os.path.exists(analysis_path):
-        logger.error(f"[GENERATE] Missing analysis file → {analysis_path}")
-        raise HTTPException(status_code=500, detail="Analysis data not found")
+        raise HTTPException(status_code=500, detail="Analysis file not found")
 
     try:
         with open(analysis_path, "r", encoding="utf-8") as f:
             analysis = json.load(f)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read analysis: {e}")
+        raise HTTPException(status_code=500, detail=f"Cannot read analysis file: {e}")
 
-    summary = analysis.get("summary", "")
-    main_topics = analysis.get("main_topics", [])
+    # Extract required fields
     document_type = analysis.get("document_type", "document")
+    main_topics = analysis.get("main_topics", [])
+    summary = analysis.get("summary", "")
+    structure = analysis.get("structure", None)
     level = analysis.get("level", "general")
-    recommended_days = analysis.get("recommended_days", None)
+    recommended_days = analysis.get("recommended_days")
 
-    # ---------------------------------------------
-    # CALL FIXED LLM FUNCTION WITH ALL PARAMETERS
-    # ---------------------------------------------
+    # ------------------------------------------------------------
+    # CALL LLM STUDY PLANNER (correct signature!)
+    # ------------------------------------------------------------
     try:
-        logger.info("[LLM_STUDY] Generating plan with full arguments...")
-        plan = await generate_study_plan(
-            file_id=file_id,
-            days=days,
-            language=language,
-            summary=summary,
+        plan_days = generate_study_plan(
+            total_days=days,
+            document_type=document_type,
             main_topics=main_topics,
+            summary=summary,
+            structure=structure,
         )
     except Exception as e:
         logger.exception("[GENERATE] LLM generation failed")
-        raise HTTPException(status_code=500, detail=f"Plan generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Generation error: {e}")
 
-    # ---------------------------------------------
-    # RESPONSE
-    # ---------------------------------------------
+    # ------------------------------------------------------------
+    # Return response in unified frontend structure
+    # ------------------------------------------------------------
     return {
         "status": "ok",
         "file_id": file_id,
         "days": days,
         "analysis": {
-            "summary": summary,
-            "main_topics": main_topics,
             "document_type": document_type,
+            "main_topics": main_topics,
+            "summary": summary,
             "level": level,
             "recommended_days": recommended_days,
         },
-        "plan": {"days": plan},
+        "plan": {
+            "days": plan_days
+        }
     }
