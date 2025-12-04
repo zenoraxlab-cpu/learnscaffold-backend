@@ -16,7 +16,6 @@ from app.config import UPLOAD_DIR
 
 router = APIRouter()
 
-
 # ======================================================================
 # TASK STATUS TRACKING
 # ======================================================================
@@ -53,17 +52,9 @@ class AnalyzeRequest(BaseModel):
 # MAIN ANALYSIS ENDPOINT
 # ======================================================================
 
-from pydantic import BaseModel
-
-class AnalyzeRequest(BaseModel):
-    file_id: str
-
 @router.post("/")
 async def analyze_document(payload: AnalyzeRequest):
     file_id = payload.file_id
-
-
-    file_id = body.file_id
 
     logger.info(f"[ANALYZE] Start file_id={file_id}")
     set_status(file_id, TaskStatus.ANALYZING)
@@ -95,7 +86,9 @@ async def analyze_document(payload: AnalyzeRequest):
     except Exception as e:
         logger.exception(f"[ANALYZE] extract_pdf_pages failed: {e}")
         pages = []
-        await notify_admin(f"❌ ANALYZE ERROR (extract_pdf_pages)\nfile_id={file_id}\n{e}")
+        await notify_admin(
+            f"❌ ANALYZE ERROR (extract_pdf_pages)\nfile_id={file_id}\n{e}"
+        )
 
     # -----------------------------------------------------------
     # 3) Extract full text
@@ -108,14 +101,17 @@ async def analyze_document(payload: AnalyzeRequest):
     except Exception as e:
         logger.error(f"[ANALYZE] extract_pdf_text crashed: {e}")
         raw_text = ""
-        await notify_admin(f"❌ ANALYZE ERROR (extract_pdf_text)\nfile_id={file_id}\n{e}")
+        await notify_admin(
+            f"❌ ANALYZE ERROR (extract_pdf_text)\nfile_id={file_id}\n{e}"
+        )
+
+    if not raw_text.strip() and pages:
+        raw_text = "\n\n".join([p.get("text", "") for p in pages])
 
     if not raw_text.strip():
-        if pages:
-            raw_text = "\n\n".join([p.get("text", "") for p in pages])
-
-    if not raw_text.strip():
-        await notify_admin(f"❌ ANALYZE ERROR: No text extracted\nfile_id={file_id}")
+        await notify_admin(
+            f"❌ ANALYZE ERROR: No text extracted\nfile_id={file_id}"
+        )
         set_status(file_id, TaskStatus.ERROR)
         raise HTTPException(status_code=500, detail="Failed to extract text")
 
@@ -123,13 +119,16 @@ async def analyze_document(payload: AnalyzeRequest):
     # 4) Clean text
     # -----------------------------------------------------------
     cleaned = clean_text(raw_text)
+
     if not cleaned.strip():
-        await notify_admin(f"❌ ANALYZE ERROR (clean_text returned empty)\nfile_id={file_id}")
+        await notify_admin(
+            f"❌ ANALYZE ERROR (clean_text returned empty)\nfile_id={file_id}"
+        )
         set_status(file_id, TaskStatus.ERROR)
         raise HTTPException(status_code=500, detail="Text cleaning failed")
 
     # -----------------------------------------------------------
-    # 4.1 Language detection
+    # 4.1 Detect language
     # -----------------------------------------------------------
     try:
         language = detect_language(cleaned)
@@ -145,7 +144,9 @@ async def analyze_document(payload: AnalyzeRequest):
 
     chunks = chunk_text(cleaned, max_chars=2000, overlap=200)
     if not chunks:
-        await notify_admin(f"❌ ANALYZE ERROR (chunk_text returned 0)\nfile_id={file_id}")
+        await notify_admin(
+            f"❌ ANALYZE ERROR (chunk_text returned 0)\nfile_id={file_id}"
+        )
         set_status(file_id, TaskStatus.ERROR)
         raise HTTPException(status_code=500, detail="Chunking failed")
 
@@ -157,12 +158,14 @@ async def analyze_document(payload: AnalyzeRequest):
     try:
         analysis = classify_document(chunks[0])
     except Exception as e:
-        await notify_admin(f"❌ ANALYZE ERROR (classify_document)\nfile_id={file_id}\n{e}")
+        await notify_admin(
+            f"❌ ANALYZE ERROR (classify_document)\nfile_id={file_id}\n{e}"
+        )
         set_status(file_id, TaskStatus.ERROR)
         raise HTTPException(status_code=500, detail="Classification failed")
 
     # -----------------------------------------------------------
-    # 7) Extract structure
+    # 7) Structure extraction
     # -----------------------------------------------------------
     set_status(file_id, TaskStatus.STRUCTURE)
 
@@ -181,7 +184,8 @@ async def analyze_document(payload: AnalyzeRequest):
     set_status(file_id, TaskStatus.READY)
 
     logger.info(
-        f"[ANALYZE] DONE → len={len(cleaned)}, chunks={len(chunks)}, pages={len(pages)}, lang={language}"
+        f"[ANALYZE] DONE → len={len(cleaned)}, chunks={len(chunks)}, "
+        f"pages={len(pages)}, lang={language}"
     )
 
     return {
