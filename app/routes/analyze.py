@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import os
+import json
 from typing import Optional, Dict
 from enum import Enum
 
@@ -179,7 +180,29 @@ async def analyze_document(payload: AnalyzeRequest):
         )
 
     # -----------------------------------------------------------
-    # 8) Done
+    # 8) Save analysis for /generate
+    # -----------------------------------------------------------
+    analysis_file = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
+
+    analysis_payload = {
+        "summary": analysis.get("summary", ""),
+        "document_type": analysis.get("document_type", "document"),
+        "main_topics": analysis.get("main_topics", []),
+        "structure": structure,
+        "language": language,
+    }
+
+    try:
+        with open(analysis_file, "w", encoding="utf-8") as f:
+            json.dump(analysis_payload, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"[ANALYZE] Saved analysis file → {analysis_file}")
+
+    except Exception as e:
+        logger.error(f"[ANALYZE] Failed to save analysis file: {e}")
+
+    # -----------------------------------------------------------
+    # 9) Done
     # -----------------------------------------------------------
     set_status(file_id, TaskStatus.READY)
 
