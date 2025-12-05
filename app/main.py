@@ -41,8 +41,9 @@ app.include_router(upload.router, prefix="/upload", tags=["Upload"])
 # Document analysis
 app.include_router(analyze.router, prefix="/analyze", tags=["Analyze"])
 
-# Study plan generation (FIX — prefix must be empty so /generate/ works!)
-app.include_router(generate.router, prefix="", tags=["Generate"])
+# Study plan generation
+app.include_router(generate.router, prefix="/generate", tags=["Generate"])
+
 
 # Video analysis (video-to-text, video plans)
 app.include_router(video.router, prefix="/video", tags=["Video"])
