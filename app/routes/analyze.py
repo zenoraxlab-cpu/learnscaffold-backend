@@ -4,7 +4,8 @@ from typing import Optional, Dict, Any
 from enum import Enum
 
 from app.utils.logger import logger
-from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages, extract_pdf_text_google_ocr
+from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
+from app.services.google_ocr import google_ocr_pdf
 from app.services.text_cleaner import clean_text
 from app.services.chunker import chunk_text
 from app.services.classifier import classify_document
@@ -96,7 +97,7 @@ async def analyze(payload: dict):
             full_text, ocr_total = "", len(pages)
 
             for idx, img_data in enumerate(pages):
-                text = extract_pdf_text_google_ocr(img_data["image"])
+                text = await google_ocr_pdf(img_data["image"])
 
                 full_text += text + "\n"
 
@@ -183,9 +184,24 @@ async def analyze(payload: dict):
         logger.info(f"[ANALYZE] DONE → len={len(cleaned)}, chunks={len(chunks)}, pages={page_total}, lang={document_language}")
 
         return analysis_data
-
     except Exception as e:
         logger.error("[ANALYZE] ERROR")
         logger.exception(e)
         set_status(file_id, TaskStatus.ERROR, msg=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------
+# Load saved analysis JSON
+# ---------------------------------------------------------
+def load_saved_analysis(file_id: str) -> dict:
+    import json
+    import os
+    from app.config import UPLOAD_DIR
+
+    path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Analysis file not found: {path}")
+
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)

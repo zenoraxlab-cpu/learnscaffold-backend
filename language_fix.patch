@@ -1,0 +1,7 @@
+--- a/app/routes/generate.py
++++ b/app/routes/generate.py
+@@ -93,7 +93,7 @@ async def generate(payload: dict):
+-    plan = await generate_study_plan(file_id, days, language, summary, structure)
++    plan = await generate_study_plan(file_id=file_id, days=days, language=language, summary=summary, structure=structure)
+
+     logger.info(f"[GENERATE] Study plan generated for file_id={file_id}")

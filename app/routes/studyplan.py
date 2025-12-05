@@ -11,7 +11,7 @@ from app.services.structure_extractor import extract_structure
 from app.services.text_cleaner import clean_text
 from app.services.chunker import chunk_text
 from app.services.classifier import classify_document
-from app.services.llm_study import generate_day_plan
+from app.services.llm_study import generate_study_plan
 from app.services.llm_flashcards import generate_flashcards_for_lesson
 from app.config import UPLOAD_DIR
 

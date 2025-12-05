@@ -1,0 +1,44 @@
+--- a/app/services/llm_study.py
++++ b/app/services/llm_study.py
+@@ -3,13 +3,13 @@ from app.utils.logger import logger
+ from app.services.openai_client import client
+
+-async def generate_study_plan(file_id: str, days: int, language: str, summary: str, structure: list, document_language: str):
++async def generate_study_plan(file_id: str, days: int, language: str, summary: str, structure: list):
+     """
+     Generate a structured study plan using the selected target language.
+     The model MUST respond ONLY in the target language.
+     """
+
+-    logger.info(f"[LLM_STUDY] Generating study plan for {days} days in '{language}' (doc_lang={document_language})...")
++    logger.info(f"[LLM_STUDY] Generating study plan for {days} days in '{language}'...")
+
+     system_prompt = f"""
+ You are an AI assistant that generates structured study plans.
+@@ -17,17 +17,11 @@ THE MOST IMPORTANT RULE:
+ ---------------------------------------------------------
+ You MUST ALWAYS produce the output in the TARGET LANGUAGE.
+ The original document's language MUST NOT appear in the final JSON.
+-The USER'S input language MUST NOT appear in the final JSON.
+-You must IGNORE the language of summary, structure, or any other input data.
++You must IGNORE the language of summary, structure, or any other input data.
+
+ TARGET LANGUAGE: {language}
+
+-ABSOLUTE PROHIBITIONS:
+-- Do NOT mirror the language of the summary.
+-- Do NOT mirror the language of the document.
+-- Do NOT output Russian unless TARGET LANGUAGE == "Russian".
+-- Do NOT mix languages.
+-- Translate all meanings into the target language BEFORE writing the result.
++ABSOLUTE RULE:
++- No matter what language the summary or structure is in → ALWAYS respond in the TARGET LANGUAGE.
+
+ OUTPUT FORMAT (STRICT):
+ Return ONLY valid JSON:
+@@ -69,7 +63,7 @@ async def generate_study_plan(file_id: str, days: int, language: str, summary: str, structure: list):
+     except Exception as e:
+         logger.error("[LLM_STUDY] LLM generation failed")
+         logger.exception(e)
+-        raise
++        raise

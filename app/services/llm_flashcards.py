@@ -1,7 +1,7 @@
 from typing import List, Dict
 import json
 
-from app.services.llm_study import call_llm
+from app.services.llm_study import generate_study_plan
 
 
 """

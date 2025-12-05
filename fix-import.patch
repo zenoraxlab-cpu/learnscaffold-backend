@@ -1,0 +1,6 @@
+--- a/app/routes/analyze.py
++++ b/app/routes/analyze.py
+@@ -5,7 +5,8 @@
+-from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages, extract_pdf_text_google_ocr
++from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
++from app.services.google_ocr import google_ocr_pdf
