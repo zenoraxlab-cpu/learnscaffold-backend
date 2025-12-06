@@ -205,3 +205,11 @@ async def extract_pdf_pages(path: str) -> list:
     doc.close()
 
     return split_text_into_pages(text, page_count)
+
+def extract_pdf_text_google_ocr(file_path: str) -> str:
+    """
+    Placeholder for Google OCR extraction.
+    Temporarily returns empty string so backend won't crash.
+    Later will be replaced with full OCR implementation.
+    """
+    return ""
