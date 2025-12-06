@@ -10,7 +10,7 @@ from app.services.text_cleaner import clean_text
 from app.services.chunker import chunk_text
 from app.services.classifier import classify_document
 from app.services.structure_extractor import extract_structure
-from app.services.ocr_google import google_ocr_pdf
+from app.services.google_ocr import google_ocr_pdf
 from app.config import UPLOAD_DIR
 
 router = APIRouter()
