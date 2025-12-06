@@ -147,35 +147,41 @@ async def analyze(payload: dict):
         structure = extract_structure(cleaned)
         logger.info(f"[STRUCTURE] Units found: {len(structure)}")
 
-     # ---------------------------------------------------------
-# SAVE ANALYSIS JSON
-# ---------------------------------------------------------
-save_path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
+        try:
+        # ---------------------------------------------------------
+        # Save analysis JSON
+        # ---------------------------------------------------------
+        save_path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
 
-analysis_data = {
-    "file_id": file_id,
-    "document_type": classification.get("document_type", ""),
-    "main_topics": classification.get("main_topics", []),
-    "summary": classification.get("summary", ""),
-    "recommended_days": classification.get("recommended_days", 7),
-    "structure": structure,
-    "document_language": document_language,
-    "length_chars": len(cleaned),
-    "pages": page_total
-}
+        analysis_data = {
+            "file_id": file_id,
+            "document_type": classification.get("document_type", ""),
+            "main_topics": classification.get("main_topics", []),
+            "summary": classification.get("summary", ""),
+            "recommended_days": classification.get("recommended_days", 7),
+            "structure": structure,
+            "document_language": document_language,
+            "length_chars": len(cleaned),
+            "pages": page_total
+        }
 
-# save json
-import json
-with open(save_path, "w", encoding="utf-8") as f:
-    json.dump(analysis_data, f, ensure_ascii=False, indent=2)
+        import json
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(analysis_data, f, ensure_ascii=False, indent=2)
 
-set_status(file_id, TaskStatus.READY)
-logger.info("[ANALYZE] DONE")
+        set_status(file_id, TaskStatus.READY)
+        logger.info("[ANALYZE] DONE")
 
-# ✔ RETURN IN CORRECT FORMAT FOR FRONTEND
-return {
-    "analysis": analysis_data
-}
+        # 🎯 Ключевой момент:
+        # Frontend ждёт обёртку {analysis: {...}}
+        return {"analysis": analysis_data}
+
+    except Exception as e:
+        logger.error("[ANALYZE] ERROR")
+        logger.exception(e)
+        set_status(file_id, TaskStatus.ERROR, msg=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 # ---------------------------------------------------------
