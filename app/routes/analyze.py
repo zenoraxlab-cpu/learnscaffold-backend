@@ -152,19 +152,17 @@ async def analyze(payload: dict):
         # ---------------------------------------------------------
         save_path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
 
-analysis_data = {
-    "file_id": file_id,
-    "document_type": classification.get("document_type", ""),
-    "main_topics": classification.get("main_topics", []),
-    "summary": classification.get("summary", ""),
-    "recommended_days": classification.get("recommended_days", 7),
-    "structure": structure,
-    "document_language": document_language,
-    "length_chars": len(cleaned),
-    "pages": page_total
-}
-
-
+        analysis_data = {
+            "file_id": file_id,
+            "document_type": classification.get("document_type", ""),
+            "main_topics": classification.get("main_topics", []),
+            "summary": classification.get("summary", ""),
+            "recommended_days": classification.get("recommended_days", 7),
+            "structure": structure,
+            "document_language": document_language,
+            "length_chars": len(cleaned),
+            "pages": page_total
+        }
 
         import json
         with open(save_path, "w", encoding="utf-8") as f:
@@ -180,6 +178,7 @@ analysis_data = {
         logger.exception(e)
         set_status(file_id, TaskStatus.ERROR, msg=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
 # ---------------------------------------------------------
 # Load saved analysis JSON
 # ---------------------------------------------------------
