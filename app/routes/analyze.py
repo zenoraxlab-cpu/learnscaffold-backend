@@ -1,28 +1,30 @@
 from fastapi import APIRouter, HTTPException
-import os
-from typing import Optional, Dict, Any
 from enum import Enum
+from typing import Dict
+import os
+import json
 
 from app.utils.logger import logger
 from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
-from app.services.google_ocr import google_ocr_pdf
 from app.services.text_cleaner import clean_text
 from app.services.chunker import chunk_text
 from app.services.classifier import classify_document
 from app.services.structure_extractor import extract_structure
+from app.services.ocr_google import google_ocr_pdf
 from app.config import UPLOAD_DIR
 
 router = APIRouter()
 
-# ======================================================================
-# TASK STATUS TRACKING
-# ======================================================================
 
+# ---------------------------------------------------------
+# TASK STATUS
+# ---------------------------------------------------------
 class TaskStatus(str, Enum):
     UPLOADED = "uploaded"
     ANALYZING = "analyzing"
     EXTRACTING = "extracting"
     EXTRACTING_TEXT = "extracting_text"
+    CLEANING = "cleaning"
     CHUNKING = "chunking"
     CLASSIFYING = "classifying"
     STRUCTURE = "structure"
@@ -30,126 +32,103 @@ class TaskStatus(str, Enum):
     ERROR = "error"
 
 
-task_status: Dict[str, str] = {}
-task_msg: Dict[str, str] = {}
-task_status_details: Dict[str, Dict[str, Any]] = {}
+task_status: Dict[str, dict] = {}
 
 
-def set_status(file_id: str, status: TaskStatus, msg: Optional[str] = None, details: Optional[Dict[str, Any]] = None):
-    task_status[file_id] = status
-    if msg:
-        task_msg[file_id] = msg
-    if details:
-        task_status_details[file_id] = details
-
-    logger.info(f"[STATUS] {file_id} → {status} {msg if msg else ''}")
-
-
-@router.get("/status/{file_id}")
-async def get_status(file_id: str):
-    return {
+def set_status(file_id: str, status: TaskStatus, details: dict = None, msg: str = None):
+    task_status[file_id] = {
         "file_id": file_id,
-        "status": task_status.get(file_id),
-        "message": task_msg.get(file_id),
-        "details": task_status_details.get(file_id),
+        "status": status.value,
+        "details": details,
+        "message": msg,
     }
+    logger.info(f"[STATUS] {file_id} → {status.value}")
 
 
-# ======================================================================
-# ANALYSIS PIPELINE
-# ======================================================================
+# ---------------------------------------------------------
+# ANALYZE
+# ---------------------------------------------------------
+@router.post("/analyze/")
+async def analyze(file_id: str):
+    logger.info(f"[ANALYZE] Start → {file_id}")
 
-@router.post("/")
-async def analyze(payload: dict):
-    file_id = payload.get("file_id")
-    if not file_id:
-        raise HTTPException(status_code=400, detail="Missing file_id")
-
-    input_path = os.path.join(UPLOAD_DIR, f"{file_id}.pdf")
-    if not os.path.exists(input_path):
-        raise HTTPException(status_code=404, detail="File not found")
-
-    logger.info(f"[ANALYZE] Start file_id={file_id}")
     set_status(file_id, TaskStatus.ANALYZING)
 
     try:
-        # ---------------------------------------------------------
-        # Extract Pages
-        # ---------------------------------------------------------
-        set_status(file_id, TaskStatus.EXTRACTING)
-        logger.info(f"[PDF] extract_pdf_pages: {input_path}")
+        input_path = os.path.join(UPLOAD_DIR, f"{file_id}.pdf")
 
+        if not os.path.exists(input_path):
+            raise FileNotFoundError(f"File not found: {input_path}")
+
+        # ---------------------------------------------------------
+        # Extract pages
+        # ---------------------------------------------------------
         pages = extract_pdf_pages(input_path)
         page_total = len(pages)
-        logger.info(f"[PDF] Pages extracted → {page_total}")
+
+        set_status(file_id, TaskStatus.EXTRACTING, {"pages": page_total})
+
+        logger.info(f"[PAGES] Found {page_total} pages")
 
         # ---------------------------------------------------------
-        # Text Extraction
+        # OCR OR TEXT
         # ---------------------------------------------------------
-        set_status(file_id, TaskStatus.EXTRACTING_TEXT)
-
-               # OCR MODE
         if page_total > 0 and pages[0].get("ocr_needed", False):
-            logger.info("[PDF] Using GOOGLE OCR mode")
+            logger.info("[OCR] Using Google OCR")
 
             full_text = ""
-            ocr_total = len(pages)
-
-            for idx, p in enumerate(pages):
-                text = await google_ocr_pdf(input_path)
-                full_text += text + "\n"
+            for idx, page in enumerate(pages):
+                part = await google_ocr_pdf(input_path)
+                full_text += part + "\n"
 
                 set_status(
                     file_id,
                     TaskStatus.EXTRACTING_TEXT,
-                    details={"page_current": idx + 1, "page_total": ocr_total}
+                    {"page_current": idx + 1, "page_total": page_total},
                 )
-
         else:
             logger.info("[PDF] Normal text extraction")
             full_text = await extract_pdf_text(input_path)
 
-        logger.info(f"[ANALYZE] extract_pdf_text OK ({len(full_text)} chars)")
+        logger.info(f"[TEXT] Extracted chars: {len(full_text)}")
 
         # ---------------------------------------------------------
         # Clean text
         # ---------------------------------------------------------
-        logger.info("Text cleaning started")
+        set_status(file_id, TaskStatus.CLEANING)
         cleaned = clean_text(full_text)
-        logger.info(f"Text cleaning finished, length={len(cleaned)}")
+        logger.info(f"[CLEAN] Cleaned length = {len(cleaned)}")
 
         # ---------------------------------------------------------
         # Detect language
         # ---------------------------------------------------------
-        logger.info("Detecting language…")
         from langdetect import detect
+
         document_language = detect(cleaned[:5000]) if cleaned.strip() else "en"
-        logger.info(f"[ANALYZE] Language → {document_language}")
+        logger.info(f"[LANG] → {document_language}")
 
         # ---------------------------------------------------------
-        # Chunking
+        # Chunk text
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.CHUNKING)
         chunks = chunk_text(cleaned)
-        logger.info(f"[ANALYZE] chunking OK → {len(chunks)} chunks")
 
         # ---------------------------------------------------------
-        # Classification
+        # Classify
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.CLASSIFYING)
         classification = classify_document(chunks)
-        logger.info("[CLASSIFIER] Completed")
 
         # ---------------------------------------------------------
-        # Structure detection
+        # Extract structure
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.STRUCTURE)
-        structure = extract_structure(cleaned)
+        structure = extract_structure(cleaned, classification)
+
         logger.info(f"[STRUCTURE] Units found: {len(structure)}")
 
-        try:
         # ---------------------------------------------------------
-        # Save analysis JSON
+        # BUILD RESULT JSON
         # ---------------------------------------------------------
         save_path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
 
@@ -165,15 +144,14 @@ async def analyze(payload: dict):
             "pages": page_total
         }
 
-        import json
+        # Save JSON
         with open(save_path, "w", encoding="utf-8") as f:
             json.dump(analysis_data, f, ensure_ascii=False, indent=2)
 
         set_status(file_id, TaskStatus.READY)
         logger.info("[ANALYZE] DONE")
 
-        # 🎯 Ключевой момент:
-        # Frontend ждёт обёртку {analysis: {...}}
+        # IMPORTANT: frontend expects { analysis: {...} }
         return {"analysis": analysis_data}
 
     except Exception as e:
@@ -183,18 +161,22 @@ async def analyze(payload: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ---------------------------------------------------------
+# GET STATUS
+# ---------------------------------------------------------
+@router.get("/analyze/status/{file_id}")
+def get_status(file_id: str):
+    return task_status.get(file_id, {"file_id": file_id, "status": "unknown"})
+
 
 # ---------------------------------------------------------
-# Load saved analysis JSON
+# LOAD SAVED ANALYSIS
 # ---------------------------------------------------------
 def load_saved_analysis(file_id: str) -> dict:
-    import json
-    import os
-    from app.config import UPLOAD_DIR
-
     path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
+
     if not os.path.exists(path):
-        raise FileNotFoundError(f"Analysis file not found: {path}")
+        raise FileNotFoundError(f"Analysis not found: {path}")
 
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
