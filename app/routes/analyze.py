@@ -179,3 +179,17 @@ async def analyze(payload: dict):
         logger.exception(e)
         set_status(file_id, TaskStatus.ERROR, msg=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+# ---------------------------------------------------------
+# Load saved analysis JSON
+# ---------------------------------------------------------
+def load_saved_analysis(file_id: str) -> dict:
+    import json
+    import os
+    from app.config import UPLOAD_DIR
+
+    path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Analysis file not found: {path}")
+
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
