@@ -88,7 +88,7 @@ async def analyze(payload: dict):
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.EXTRACTING_TEXT)
 
-        # OCR MODE
+               # OCR MODE
         if page_total > 0 and pages[0].get("ocr_needed", False):
             logger.info("[PDF] Using GOOGLE OCR mode")
 
@@ -114,17 +114,16 @@ async def analyze(payload: dict):
         # ---------------------------------------------------------
         # Clean text
         # ---------------------------------------------------------
+        logger.info("Text cleaning started")
         cleaned = clean_text(full_text)
-        logger.info(f"[CLEAN] Cleaned length = {len(cleaned)}")
+        logger.info(f"Text cleaning finished, length={len(cleaned)}")
 
         # ---------------------------------------------------------
         # Detect language
         # ---------------------------------------------------------
         logger.info("Detecting language…")
-
         from langdetect import detect
         document_language = detect(cleaned[:5000]) if cleaned.strip() else "en"
-
         logger.info(f"[ANALYZE] Language → {document_language}")
 
         # ---------------------------------------------------------
