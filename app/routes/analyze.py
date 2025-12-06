@@ -81,7 +81,7 @@ async def analyze(payload: dict):
         set_status(file_id, TaskStatus.EXTRACTING)
         logger.info(f"[PDF] extract_pdf_pages: {input_path}")
 
-        pages = extract_pdf_pages(input_path)
+        pages = await extract_pdf_pages(input_path)
 
         page_total = len(pages)
         logger.info(f"[PDF] PyMuPDF per-page OK ({page_total} pages)")
