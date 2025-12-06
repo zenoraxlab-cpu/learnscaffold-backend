@@ -165,7 +165,7 @@ analysis_data = {
     "pages": page_total
 }
 
-        }
+
 
         import json
         with open(save_path, "w", encoding="utf-8") as f:
