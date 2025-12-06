@@ -61,7 +61,7 @@ async def get_status(file_id: str):
 # ANALYSIS PIPELINE
 # ======================================================================
 
-@router.post("/analyze/")
+@router.post("/")
 async def analyze(payload: dict):
     file_id = payload.get("file_id")
     if not file_id:
