@@ -112,7 +112,8 @@ async def analyze(payload: dict):
 
         else:
             logger.info("[PDF] Normal text extraction")
-            full_text = extract_pdf_text(input_path)
+           full_text = await extract_pdf_text(input_path)
+
 
         logger.info(f"[ANALYZE] extract_pdf_text OK ({len(full_text)} chars)")
 
