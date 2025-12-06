@@ -45,7 +45,7 @@ def set_status(file_id: str, status: TaskStatus, msg: Optional[str] = None, deta
     logger.info(f"[STATUS] {file_id} → {status} {msg if msg else ''}")
 
 
-@router.get("/analyze/status/{file_id}")
+@router.get("/status/{file_id}")
 async def get_status(file_id: str):
     return {
         "file_id": file_id,
