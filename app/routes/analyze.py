@@ -86,7 +86,7 @@ async def analyze(payload: dict):
         page_total = len(pages)
         logger.info(f"[PDF] PyMuPDF per-page OK ({page_total} pages)")
 
-        # ---------------------------------------------------------
+                # ---------------------------------------------------------
         # Text Extraction (OCR or normal)
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.EXTRACTING_TEXT)
@@ -110,19 +110,11 @@ async def analyze(payload: dict):
 
                 logger.info(f"[GOOGLE OCR] Page {idx+1}/{ocr_total} OK, {len(text)} chars")
 
-         else:
+        else:
             logger.info("[PDF] Normal text extraction")
             full_text = await extract_pdf_text(input_path)
 
-
         logger.info(f"[ANALYZE] extract_pdf_text OK ({len(full_text)} chars)")
-
-        # ---------------------------------------------------------
-        # Clean text
-        # ---------------------------------------------------------
-        logger.info("Text cleaning started")
-        cleaned = clean_text(full_text)
-        logger.info(f"Text cleaning finished, length={len(cleaned)}")
 
         # ---------------------------------------------------------
         # Detect language
