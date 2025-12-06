@@ -120,41 +120,48 @@ async def extract_pdf_text(path: str) -> str:
 # ---------------------------------------------------------
 # Extract pages with separate text chunks
 # ---------------------------------------------------------
-async def extract_pdf_pages(path: str) -> list:
+def extract_pdf_pages(path: str) -> list:
     logger.info(f"[PDF] extract_pdf_pages: {path}")
 
     # SCANNED PDF → OCR page splitting
     if detect_scanned_pdf(path):
         logger.warning("[PDF] Scanned PDF → using OCR for pages")
 
-        text = await google_ocr_pdf(path)
-        if not text.strip():
-            return []
-
-        # Determine number of pages
+        # OC R is async → вызываем синхронно НЕЛЬЗЯ
+        # Поэтому мы пока не используем OCR для страниц
+        # Возвращаем пустые тексты, но правильное количество страниц
         doc = fitz.open(path)
         page_count = len(doc)
         doc.close()
 
-        return split_text_into_pages(text, page_count)
+        return [
+            {
+                "page": i + 1,
+                "text": "",
+                "ocr_needed": True,
+                "image": None   # Под OCR page-by-page добавим позже
+            }
+            for i in range(page_count)
+        ]
 
     # Method 1: PyMuPDF
     try:
         doc = fitz.open(path)
+        pages = []
 
-        pages = [
-            {
+        for i, page in enumerate(doc):
+            text = (page.get_text("text") or "").strip()
+            pages.append({
                 "page": i + 1,
-                "text": (page.get_text("text") or "").strip(),
-            }
-            for i, page in enumerate(doc)
-        ]
+                "text": text,
+                "ocr_needed": len(text) < 10,
+                "image": None
+            })
 
         doc.close()
 
-        if any(p["text"] for p in pages):
-            logger.info("[PDF] PyMuPDF per-page OK")
-            return pages
+        logger.info("[PDF] PyMuPDF per-page OK")
+        return pages
 
     except Exception as e:
         logger.warning(f"[PDF] PyMuPDF page extraction failed: {e}")
@@ -163,16 +170,17 @@ async def extract_pdf_pages(path: str) -> list:
     try:
         pages = []
         with pdfplumber.open(path) as pdf:
-
             for i, page in enumerate(pdf.pages):
+                text = (page.extract_text() or "").strip()
                 pages.append({
                     "page": i + 1,
-                    "text": (page.extract_text() or "").strip(),
+                    "text": text,
+                    "ocr_needed": len(text) < 10,
+                    "image": None
                 })
 
-        if any(p["text"] for p in pages):
-            logger.info("[PDF] pdfplumber per-page OK")
-            return pages
+        logger.info("[PDF] pdfplumber per-page OK")
+        return pages
 
     except Exception as e:
         logger.warning(f"[PDF] pdfplumber page extraction failed: {e}")
@@ -183,28 +191,23 @@ async def extract_pdf_pages(path: str) -> list:
         reader = PdfReader(path)
 
         for i, page in enumerate(reader.pages):
+            text = (page.extract_text() or "").strip()
             pages.append({
                 "page": i + 1,
-                "text": (page.extract_text() or "").strip(),
+                "text": text,
+                "ocr_needed": len(text) < 10,
+                "image": None
             })
 
-        if any(p["text"] for p in pages):
-            logger.info("[PDF] PyPDF2 per-page OK")
-            return pages
+        logger.info("[PDF] PyPDF2 per-page OK")
+        return pages
 
     except Exception as e:
         logger.warning(f"[PDF] PyPDF2 page extraction failed: {e}")
 
-    # OCR fallback
-    text = await google_ocr_pdf(path)
-    if not text.strip():
-        return []
+    # Fallback: return single empty page
+    return [{"page": 1, "text": "", "ocr_needed": True, "image": None}]
 
-    doc = fitz.open(path)
-    page_count = len(doc)
-    doc.close()
-
-    return split_text_into_pages(text, page_count)
 
 def extract_pdf_text_google_ocr(file_path: str) -> str:
     """

@@ -32,8 +32,6 @@ class TaskStatus(str, Enum):
 
 task_status: Dict[str, str] = {}
 task_msg: Dict[str, str] = {}
-
-# ← NEW: detailed progress, including OCR page counters
 task_status_details: Dict[str, Dict[str, Any]] = {}
 
 
@@ -75,52 +73,58 @@ async def analyze(payload: dict):
     set_status(file_id, TaskStatus.ANALYZING)
 
     try:
-                # ---------------------------------------------------------
-        # Extract Pages (metadata-level extraction)
+        # ---------------------------------------------------------
+        # Extract Pages
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.EXTRACTING)
         logger.info(f"[PDF] extract_pdf_pages: {input_path}")
 
-        pages = extract_pdf_pages(input_path)   # ← БЕЗ await
-
+        pages = extract_pdf_pages(input_path)
         page_total = len(pages)
-        logger.info(f"[PDF] PyMuPDF per-page OK ({page_total} pages)")
+        logger.info(f"[PDF] Pages extracted → {page_total}")
 
         # ---------------------------------------------------------
-        # Text Extraction (OCR or normal)
+        # Text Extraction
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.EXTRACTING_TEXT)
 
+        # OCR MODE
         if page_total > 0 and pages[0].get("ocr_needed", False):
             logger.info("[PDF] Using GOOGLE OCR mode")
 
-            full_text, ocr_total = "", len(pages)
+            full_text = ""
+            ocr_total = len(pages)
 
-            for idx, img_data in enumerate(pages):
-                text = await google_ocr_pdf(img_data["image"])
+            for idx, p in enumerate(pages):
+                text = await google_ocr_pdf(input_path)
                 full_text += text + "\n"
 
-                # PROGRESS UPDATE
                 set_status(
                     file_id,
                     TaskStatus.EXTRACTING_TEXT,
                     details={"page_current": idx + 1, "page_total": ocr_total}
                 )
 
-                logger.info(f"[GOOGLE OCR] Page {idx+1}/{ocr_total} OK, {len(text)} chars")
-
         else:
             logger.info("[PDF] Normal text extraction")
-            full_text = extract_pdf_text(input_path)   # ← тоже БЕЗ await
+            full_text = await extract_pdf_text(input_path)
 
         logger.info(f"[ANALYZE] extract_pdf_text OK ({len(full_text)} chars)")
+
+        # ---------------------------------------------------------
+        # Clean text
+        # ---------------------------------------------------------
+        cleaned = clean_text(full_text)
+        logger.info(f"[CLEAN] Cleaned length = {len(cleaned)}")
 
         # ---------------------------------------------------------
         # Detect language
         # ---------------------------------------------------------
         logger.info("Detecting language…")
+
         from langdetect import detect
         document_language = detect(cleaned[:5000]) if cleaned.strip() else "en"
+
         logger.info(f"[ANALYZE] Language → {document_language}")
 
         # ---------------------------------------------------------
@@ -134,16 +138,13 @@ async def analyze(payload: dict):
         # Classification
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.CLASSIFYING)
-        logger.info("[CLASSIFIER] Starting LLM classification")
-
         classification = classify_document(chunks)
-        logger.info("[CLASSIFIER] Classification completed")
+        logger.info("[CLASSIFIER] Completed")
 
         # ---------------------------------------------------------
         # Structure detection
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.STRUCTURE)
-
         structure = extract_structure(cleaned)
         logger.info(f"[STRUCTURE] Units found: {len(structure)}")
 
@@ -151,6 +152,7 @@ async def analyze(payload: dict):
         # Save analysis JSON
         # ---------------------------------------------------------
         save_path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
+
         analysis_data = {
             "file_id": file_id,
             "document_type": classification.get("document_type", ""),
@@ -158,7 +160,7 @@ async def analyze(payload: dict):
             "summary": classification.get("summary", ""),
             "recommended_days": classification.get("recommended_days", 7),
             "structure": structure,
-            "document_language": document_language,    # ← NEW!
+            "document_language": document_language,
             "length_chars": len(cleaned),
             "pages": page_total
         }
@@ -167,33 +169,13 @@ async def analyze(payload: dict):
         with open(save_path, "w", encoding="utf-8") as f:
             json.dump(analysis_data, f, ensure_ascii=False, indent=2)
 
-        logger.info(f"[ANALYZE] Saved analysis file → {save_path}")
-
-        # ---------------------------------------------------------
-        # Done
-        # ---------------------------------------------------------
         set_status(file_id, TaskStatus.READY)
-        logger.info(f"[ANALYZE] DONE → len={len(cleaned)}, chunks={len(chunks)}, pages={page_total}, lang={document_language}")
+        logger.info("[ANALYZE] DONE")
 
         return analysis_data
+
     except Exception as e:
         logger.error("[ANALYZE] ERROR")
         logger.exception(e)
         set_status(file_id, TaskStatus.ERROR, msg=str(e))
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# ---------------------------------------------------------
-# Load saved analysis JSON
-# ---------------------------------------------------------
-def load_saved_analysis(file_id: str) -> dict:
-    import json
-    import os
-    from app.config import UPLOAD_DIR
-
-    path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Analysis file not found: {path}")
-
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
