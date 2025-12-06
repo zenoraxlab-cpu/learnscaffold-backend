@@ -75,18 +75,18 @@ async def analyze(payload: dict):
     set_status(file_id, TaskStatus.ANALYZING)
 
     try:
-        # ---------------------------------------------------------
+                # ---------------------------------------------------------
         # Extract Pages (metadata-level extraction)
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.EXTRACTING)
         logger.info(f"[PDF] extract_pdf_pages: {input_path}")
 
-        pages = await extract_pdf_pages(input_path)
+        pages = extract_pdf_pages(input_path)   # ← БЕЗ await
 
         page_total = len(pages)
         logger.info(f"[PDF] PyMuPDF per-page OK ({page_total} pages)")
 
-                # ---------------------------------------------------------
+        # ---------------------------------------------------------
         # Text Extraction (OCR or normal)
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.EXTRACTING_TEXT)
@@ -98,7 +98,6 @@ async def analyze(payload: dict):
 
             for idx, img_data in enumerate(pages):
                 text = await google_ocr_pdf(img_data["image"])
-
                 full_text += text + "\n"
 
                 # PROGRESS UPDATE
@@ -112,7 +111,7 @@ async def analyze(payload: dict):
 
         else:
             logger.info("[PDF] Normal text extraction")
-            full_text = await extract_pdf_text(input_path)
+            full_text = extract_pdf_text(input_path)   # ← тоже БЕЗ await
 
         logger.info(f"[ANALYZE] extract_pdf_text OK ({len(full_text)} chars)")
 
