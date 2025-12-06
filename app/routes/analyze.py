@@ -111,8 +111,8 @@ async def analyze(payload: dict):
                 logger.info(f"[GOOGLE OCR] Page {idx+1}/{ocr_total} OK, {len(text)} chars")
 
         else:
-            logger.info("[PDF] Normal text extraction")
-           full_text = await extract_pdf_text(input_path)
+    logger.info("[PDF] Normal text extraction")
+    full_text = await extract_pdf_text(input_path)
 
 
         logger.info(f"[ANALYZE] extract_pdf_text OK ({len(full_text)} chars)")
