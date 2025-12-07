@@ -56,17 +56,7 @@ OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY", "")
 # ----------------------------
 # CORS Allowed Origins (REQUIRED)
 # ----------------------------
-ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "https://learnscaffold.com",
-    "https://www.learnscaffold.com",
-
-    # Все возможные preview-домены Vercel:
-    "https://*.vercel.app",
-
-    # Твой backend domain (если нужен)
-    "https://learnscaffold-backend-ocr.onrender.com",
-]
+allow_origins=["*"]
 
 
 
