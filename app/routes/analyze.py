@@ -45,8 +45,9 @@ def set_status(file_id: str, status: TaskStatus, details: dict = None, msg: str 
 
 
 # ---------------------------------------------------------
-# ANALYZE
+# ANALYZE — allow /analyze and /analyze/
 # ---------------------------------------------------------
+@router.post("/analyze")
 @router.post("/analyze/")
 async def analyze(file_id: str):
     logger.info(f"[ANALYZE] Start → {file_id}")
@@ -73,7 +74,7 @@ async def analyze(file_id: str):
         set_status(file_id, TaskStatus.CLEANING)
         cleaned = clean_text(full_text)
 
-        # Language detect
+        # Detect language
         try:
             from langdetect import detect
             document_language = detect(cleaned[:5000]) if cleaned.strip() else "en"
@@ -82,19 +83,19 @@ async def analyze(file_id: str):
 
         logger.info(f"[LANG] → {document_language}")
 
-        # Chunk
+        # Chunking
         set_status(file_id, TaskStatus.CHUNKING)
         chunks = chunk_text(cleaned)
 
-        # Classify
+        # Classification
         set_status(file_id, TaskStatus.CLASSIFYING)
         classification = classify_document(chunks)
 
-        # STRUCTURE (must be awaited!)
+        # STRUCTURE (async)
         set_status(file_id, TaskStatus.STRUCTURE)
         structure = await extract_structure(cleaned, classification)
 
-        # Build JSON
+        # Build final JSON
         analysis_data = {
             "file_id": file_id,
             "document_type": classification.get("document_type", "text"),
@@ -124,9 +125,10 @@ async def analyze(file_id: str):
 
 
 # ---------------------------------------------------------
-# GET STATUS
+# GET STATUS — allow both / and no /
 # ---------------------------------------------------------
 @router.get("/analyze/status/{file_id}")
+@router.get("/analyze/status/{file_id}/")
 def get_status(file_id: str):
     return task_status.get(file_id, {"file_id": file_id, "status": "unknown"})
 
