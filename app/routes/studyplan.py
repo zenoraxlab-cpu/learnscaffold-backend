@@ -19,7 +19,7 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------
-# Build text context for flashcards
+# Helper: build text context for flashcards
 # ---------------------------------------------------------------------
 def build_lesson_context(lesson: dict) -> str:
     parts: list[str] = []
@@ -30,9 +30,7 @@ def build_lesson_context(lesson: dict) -> str:
 
     theory = lesson.get("theory")
     if theory:
-        parts.append(
-            "Theory:\n" + (theory if isinstance(theory, str) else "\n".join(theory))
-        )
+        parts.append("Theory:\n" + (theory if isinstance(theory, str) else "\n".join(theory)))
 
     practice = lesson.get("practice")
     if practice:
@@ -40,35 +38,57 @@ def build_lesson_context(lesson: dict) -> str:
 
     summary = lesson.get("summary")
     if summary:
-        parts.append(
-            "Summary:\n"
-            + (summary if isinstance(summary, str) else "\n".join(summary))
-        )
+        parts.append("Summary:\n" + (summary if isinstance(summary, str) else "\n".join(summary)))
 
     return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------
-# NEW: semantic topic → PDF pages
+# NEW: Smart matching lessons → PDF pages
 # ---------------------------------------------------------------------
 def attach_source_pages(plan_days: List[dict], structure: List[dict]) -> List[dict]:
-    topic_pages = {}
+    """
+    Привязка страниц PDF к урокам по смыслу.
+    Мы делаем максимально простой, но надёжный fuzzy matching:
+    - сравнение по подстроке
+    - сравнение по ключевым словам (разбиваем на токены)
+    """
 
+    # preprocess structure topics
+    indexed = []
     for block in structure:
         topic = block.get("topic")
         page = block.get("page")
-        if topic and page:
-            topic_pages.setdefault(topic.lower(), []).append(page)
+
+        if not topic or not page:
+            continue
+
+        indexed.append({
+            "topic": topic.lower(),
+            "tokens": set(topic.lower().replace(",", " ").replace(";", " ").split()),
+            "page": page
+        })
 
     for lesson in plan_days:
         title = (lesson.get("title") or "").lower()
-        matched = []
+        title_tokens = set(title.replace(",", " ").replace(";", " ").split())
 
-        for topic, pages in topic_pages.items():
+        matched_pages = []
+
+        for item in indexed:
+            topic = item["topic"]
+
+            # direct substring match
             if topic in title or title in topic:
-                matched.extend(pages)
+                matched_pages.append(item["page"])
+                continue
 
-        lesson["source_pages"] = sorted(set(matched))
+            # token intersection
+            if len(title_tokens.intersection(item["tokens"])) >= 2:
+                matched_pages.append(item["page"])
+
+        # assign result
+        lesson["source_pages"] = sorted(set(matched_pages))
 
     return plan_days
 
@@ -83,12 +103,11 @@ async def generate_study_plan(
     include_flashcards: bool = False,
     flashcards_per_lesson: int = 5,
 ):
-    logger.info(
-        f"[GENERATE] Request: file_id={file_id}, days={days}, "
-        f"flashcards={include_flashcards}"
-    )
+    logger.info(f"[GENERATE] Request: file_id={file_id}, days={days}, flashcards={include_flashcards}")
 
-    # 1. resolve file path
+    # -----------------------------------------------------------------
+    # 1. Resolve file path
+    # -----------------------------------------------------------------
     file_path = None
     for fname in os.listdir(UPLOAD_DIR):
         if fname.startswith(file_id):
@@ -98,12 +117,15 @@ async def generate_study_plan(
     if not file_path:
         raise HTTPException(status_code=404, detail="File not found")
 
-    # 2. extract structure (topics + pages)
+    # -----------------------------------------------------------------
+    # 2. Extract structure
+    # -----------------------------------------------------------------
     structure = extract_structure(file_path) or []
-    print("STRUCTURE DEBUG:", structure)
     logger.warning(f"STRUCTURE DEBUG: {structure}")
 
-    # 3. count pages
+    # -----------------------------------------------------------------
+    # 3. Count PDF pages
+    # -----------------------------------------------------------------
     try:
         pages = await extract_pdf_pages(file_path)
         pages_count = len(pages)
@@ -111,23 +133,30 @@ async def generate_study_plan(
         logger.error(f"[GENERATE] Page extraction failed: {e}")
         pages_count = 0
 
-    # 4. extract text
+    # -----------------------------------------------------------------
+    # 4. Extract text
+    # -----------------------------------------------------------------
     raw_text = await extract_pdf_text(file_path)
     if not raw_text or not raw_text.strip():
         raise HTTPException(status_code=500, detail="Failed to extract text from PDF")
 
-    # 5. clean text
     cleaned = clean_text(raw_text)
 
-    # 6. chunking
+    # -----------------------------------------------------------------
+    # 5. Chunking
+    # -----------------------------------------------------------------
     chunks = chunk_text(cleaned, max_chars=2500, overlap=200)
     if not chunks:
         raise HTTPException(status_code=500, detail="Chunking failed")
 
-    # 7. classification
+    # -----------------------------------------------------------------
+    # 6. Classification
+    # -----------------------------------------------------------------
     analysis = classify_document(chunks[0])
 
-    # 8. generate lessons
+    # -----------------------------------------------------------------
+    # 7. Generate lessons (LLM)
+    # -----------------------------------------------------------------
     plan_days: List[dict] = []
 
     for day in range(1, days + 1):
@@ -150,16 +179,18 @@ async def generate_study_plan(
                 )
 
         plan_days.append(lesson)
-        print("LESSON TITLE:", lesson.get("title"))
-        logger.warning(f"LESSON TITLE: {lesson.get('title')}")
 
-    # 9. attach pages
+    logger.warning(f"LESSON TITLES DEBUG: {[d.get('title') for d in plan_days]}")
+
+    # -----------------------------------------------------------------
+    # 8. Attach pages
+    # -----------------------------------------------------------------
     plan_days = attach_source_pages(plan_days, structure)
-    print("PAGES ATTACHED:", [d.get("source_pages") for d in plan_days])
-    logger.warning(f"PAGES ATTACHED: {[d.get('source_pages') for d in plan_days]}")
+    logger.warning(f"PAGES ATTACHED DEBUG: {[d.get('source_pages') for d in plan_days]}")
 
-    logger.info("[GENERATE] Completed OK")
-
+    # -----------------------------------------------------------------
+    # RETURN (with debug fields)
+    # -----------------------------------------------------------------
     return {
         "status": "ok",
         "file_id": file_id,
@@ -167,4 +198,9 @@ async def generate_study_plan(
         "analysis": analysis,
         "structure": structure,
         "plan": {"days": plan_days},
+
+        # ===== DEBUG FIELDS (удалим после теста) =====
+        "debug_structure": structure,
+        "debug_titles": [d.get("title") for d in plan_days],
+        "debug_pages_attached": [d.get("source_pages") for d in plan_days],
     }
