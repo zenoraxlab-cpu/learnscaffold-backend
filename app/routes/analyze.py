@@ -47,13 +47,9 @@ def set_status(file_id: str, status: TaskStatus, details: dict = None, msg: str 
 # ---------------------------------------------------------
 # ANALYZE
 # ---------------------------------------------------------
-@router.post("/")
-async def analyze(payload: dict):
-    file_id = payload.get("file_id")
+@router.post("/analyze/")
+async def analyze(file_id: str):
     logger.info(f"[ANALYZE] Start → {file_id}")
-
-    if not file_id:
-        raise HTTPException(status_code=400, detail="file_id missing")
 
     set_status(file_id, TaskStatus.ANALYZING)
 
@@ -94,9 +90,9 @@ async def analyze(payload: dict):
         set_status(file_id, TaskStatus.CLASSIFYING)
         classification = classify_document(chunks)
 
-        # Structure
+        # STRUCTURE (must be awaited!)
         set_status(file_id, TaskStatus.STRUCTURE)
-        structure = extract_structure(cleaned, classification)
+        structure = await extract_structure(cleaned, classification)
 
         # Build JSON
         analysis_data = {
