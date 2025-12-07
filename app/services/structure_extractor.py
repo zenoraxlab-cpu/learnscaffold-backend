@@ -3,16 +3,16 @@ from app.utils.logger import logger
 from app.services.pdf_extractor import extract_pdf_pages
 import json
 
-
-MAX_PAGES = 3                # используем только первые 3 страницы
-MAX_CHARS_PER_PAGE = 2000    # ограничиваем размер каждой страницы
-MAX_TOTAL_PROMPT = 7000      # общий предел текста для GPT
-
+# Оптимальные лимиты
+MAX_PAGES = 10
+MAX_CHARS_PER_PAGE = 1500
+MAX_TOTAL_PROMPT = 15000
 
 async def extract_structure(file_path: str):
     """
-    Extract semantic structure with page numbers,
-    but optimized to avoid memory spikes.
+    Extract semantic structure from PDF with page numbers.
+    Optimized not to explode memory, but rich enough
+    for GPT to see actual document structure.
     """
 
     logger.info("[STRUCTURE] Starting structure extraction")
@@ -28,10 +28,10 @@ async def extract_structure(file_path: str):
         logger.warning("[STRUCTURE] No pages extracted")
         return []
 
-    # 2. Take only the first few pages
+    # 2. Take first N pages
     sampled = pages[:MAX_PAGES]
 
-    # 3. Trim each page to avoid huge payloads
+    # 3. Trim content per page
     trimmed_pages = []
     for i, content in enumerate(sampled):
         if not content:
@@ -39,31 +39,32 @@ async def extract_structure(file_path: str):
         trimmed = content[:MAX_CHARS_PER_PAGE]
         trimmed_pages.append(f"=== PAGE {i+1} ===\n{trimmed}")
 
-    # 4. Build limited document text
+    # 4. Build combined prompt
     page_joined = "\n\n".join(trimmed_pages)
 
-    # Hard trim global size
+    # global cap
     if len(page_joined) > MAX_TOTAL_PROMPT:
         page_joined = page_joined[:MAX_TOTAL_PROMPT]
 
     logger.info(f"[STRUCTURE] Prompt size: {len(page_joined)} chars")
 
+    # GPT prompt
     prompt = f"""
-Extract semantic structure of the textbook.
+Extract the semantic structure of this textbook.
 
-Return ONLY JSON list of sections:
+Return ONLY valid JSON array:
 [
   {{
     "title": "...",
-    "topics": ["..."],
+    "topics": ["...", "..."],
     "pages": [1, 2]
   }}
 ]
 
 Rules:
 - MUST be valid JSON.
-- Pages must correspond only to PAGE markers below.
-- No commentary.
+- Pages MUST correspond to PAGE markers below.
+- NO explanations.
 
 Document:
 \"\"\"
