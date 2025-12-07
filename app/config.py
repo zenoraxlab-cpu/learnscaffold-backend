@@ -60,9 +60,9 @@ ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "https://learnscaffold.com",
     "https://www.learnscaffold.com",
-
-    # Разрешить ВСЕ домены Vercel проекта
-    "https://*.vercel.app",
+    "https://learnscaffold-frontend.vercel.app",
+    "https://learnscaffold-frontend-git-production-zenoraxs-projects.vercel.app",
+    "https://learnscaffold-frontend-2uz09bsek-zenoraxs-projects.vercel.app",  # NEW
 ]
 
 
