@@ -8,22 +8,21 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------
-# Fuzzy matching: привязка страниц PDF к урокам
+# 1. Smart fuzzy matching: topic → PDF page
 # ---------------------------------------------------------------------
 def attach_source_pages(plan_days, structure):
     """
-    Привязка страниц PDF к урокам по смыслу.
-    Используем:
-      - сравнение по подстроке
-      - сравнение по ключевым словам
+    Привязка страниц PDF к урокам по смыслу:
+      ✔ подстрока
+      ✔ пересечение ключевых слов
     """
 
     indexed = []
 
+    # Подготовка структуры тем из анализа
     for block in structure:
         topic = block.get("topic")
         page = block.get("page")
-
         if not topic or not page:
             continue
 
@@ -35,38 +34,65 @@ def attach_source_pages(plan_days, structure):
             "page": page
         })
 
+    # Привязка страниц к каждому уроку
     for lesson in plan_days:
         title = (lesson.get("title") or "").lower()
         title_tokens = set(title.replace(",", " ").replace(";", " ").split())
-
         matched = []
 
         for item in indexed:
             topic = item["topic"]
 
-            # Подстрока (90% кейсов)
+            # 1) Прямое совпадение по подстроке
             if topic in title or title in topic:
                 matched.append(item["page"])
                 continue
 
-            # Match по 2+ общим словам
+            # 2) Семантическое совпадение по токенам
             if len(title_tokens.intersection(item["tokens"])) >= 2:
                 matched.append(item["page"])
 
-        # Итог: уникальные страницы, отсортированные
         lesson["source_pages"] = sorted(set(matched))
 
     return plan_days
 
 
-# allow POST /generate and POST /generate/
+# ---------------------------------------------------------------------
+# 2. Универсальный парсер структуры плана (любой формат → days[])
+# ---------------------------------------------------------------------
+def normalize_plan(raw_plan):
+    """
+    Приводит план от LLM к универсальному виду:
+      → всегда возвращает list[dict]
+    """
+
+    # Формат: { "plan": { "days": [...] } }
+    if isinstance(raw_plan, dict) and "plan" in raw_plan and isinstance(raw_plan["plan"], dict):
+        return raw_plan["plan"].get("days", [])
+
+    # Формат: { "plan": [ ... ] }
+    if isinstance(raw_plan, dict) and isinstance(raw_plan.get("plan"), list):
+        return raw_plan["plan"]
+
+    # Формат: [...] (просто список уроков)
+    if isinstance(raw_plan, list):
+        return raw_plan
+
+    logger.error(f"[ERROR] Unexpected plan format: {raw_plan}")
+    raise HTTPException(status_code=500, detail="Invalid plan format")
+
+
+# ---------------------------------------------------------------------
+# 3. Основной endpoint /generate
+# ---------------------------------------------------------------------
 @router.post("")
 @router.post("/")
 async def generate(payload: dict):
 
     print("🔥🔥🔥 BACKEND /generate CALLED")
-    logger.warning(f"[DEBUG PAYLOAD] payload={payload}")
+    logger.warning(f"[DEBUG PAYLOAD] {payload}")
 
+    # -------- Проверка входных параметров ----------
     file_id = payload.get("file_id")
     days = payload.get("days")
     language = payload.get("language")
@@ -79,9 +105,9 @@ async def generate(payload: dict):
     except:
         raise HTTPException(status_code=422, detail="Invalid 'days' value")
 
-    logger.info(f"[GENERATE] Start → file_id={file_id} days={days} language={language}")
+    logger.info(f"[GENERATE] Start → file={file_id} days={days} lang={language}")
 
-    # Загружаем JSON анализа из /analyze
+    # -------- Загрузка анализа из /analyze ----------
     analysis = load_saved_analysis(file_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="No saved analysis for this file")
@@ -93,8 +119,8 @@ async def generate(payload: dict):
     logger.warning(f"[DEBUG STRUCTURE] {structure}")
 
     try:
-        # Генерируем уроки через LLM /services/llm_study.py
-        plan = await generate_study_plan(
+        # -------- Генерация уроков через LLM --------
+        raw_plan = await generate_study_plan(
             file_id=file_id,
             days=days,
             language=language,
@@ -103,23 +129,28 @@ async def generate(payload: dict):
             document_language=document_language,
         )
 
-        # -----------------------------
-        # ДОБАВЛЯЕМ СТРАНИЦЫ (ВАЖНО!)
-        # -----------------------------
-        plan_days = plan.get("plan", {}).get("days", [])
-        plan_days = attach_source_pages(plan_days, structure)
-        plan["plan"]["days"] = plan_days
+        # -------- Приведение формата плана --------
+        plan_days = normalize_plan(raw_plan)
 
-        # DEBUG
+        # -------- Привязка страниц PDF --------
+        plan_days = attach_source_pages(plan_days, structure)
+
+        # -------- Debug поля --------
         debug_titles = [d.get("title") for d in plan_days]
         debug_pages = [d.get("source_pages") for d in plan_days]
 
         logger.warning(f"[DEBUG TITLES] {debug_titles}")
         logger.warning(f"[DEBUG PAGES] {debug_pages}")
 
-        # Возвращаем план + debug
+        # -------- Возврат итогового ответа --------
         return {
-            **plan,
+            "status": "ok",
+            "file_id": file_id,
+            "days": days,
+            "analysis": analysis,
+            "plan": {"days": plan_days},
+
+            # DEBUG FIELDS
             "debug_structure": structure,
             "debug_titles": debug_titles,
             "debug_pages_attached": debug_pages,
