@@ -107,6 +107,11 @@ async def analyze(payload = Body(...)):
 
         # Structure (async!)
         set_status(file_id, TaskStatus.STRUCTURE)
+        logger.warning("=== DEBUG LLM INPUT START ===")
+        logger.warning(f"LLM text size: {len(cleaned)}")
+        logger.warning(f"First 500 chars: {cleaned[:500]}")
+        logger.warning(f"Classification: {classification}")
+        logger.warning("=== DEBUG LLM INPUT END ===")
         structure = await extract_structure(cleaned, classification)
 
         analysis_data = {
@@ -131,10 +136,16 @@ async def analyze(payload = Body(...)):
         return {"analysis": analysis_data}
 
     except Exception as e:
-        logger.error("[ANALYZE] ERROR DURING LLM ANALYSIS")
-        logger.exception(e)
-        set_status(file_id, TaskStatus.ERROR, msg=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    logger.error("=== ANALYZE FAILED ===")
+    logger.error(f"FILE ID → {file_id}")
+    logger.error(f"ERROR TYPE → {type(e).__name__}")
+    logger.error(f"ERROR MESSAGE → {str(e)}")
+    logger.exception(e)
+
+    set_status(file_id, TaskStatus.ERROR, msg=str(e))
+
+    raise HTTPException(status_code=500, detail="LLM request failed")
+
 
 
 # ---------------------------------------------------------
