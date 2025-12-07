@@ -56,7 +56,7 @@ OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY", "")
 # ----------------------------
 # CORS Allowed Origins (REQUIRED)
 # ----------------------------
-allow_origins=["*"]
 
 
+ALLOWED_ORIGINS = ["*"]
 
