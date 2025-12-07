@@ -61,4 +61,6 @@ ALLOWED_ORIGINS = [
     "https://learnscaffold.com",
     "https://www.learnscaffold.com",
     "https://learnscaffold-frontend.vercel.app",
+    "https://learnscaffold-frontend-git-production-zenoraxs-projects.vercel.app",
 ]
+
