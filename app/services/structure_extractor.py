@@ -1,51 +1,60 @@
 from app.utils.llm import run_gpt
 from app.utils.logger import logger
 
-def extract_structure(text: str, classification: dict) -> list:
+
+async def extract_structure(cleaned_text: str, classification: dict):
     """
-    Build study structure from cleaned text and classification metadata.
+    Extracts document structure using GPT.
+    Returns a list of sections.
     """
 
     logger.info("[STRUCTURE] Starting structure extraction")
 
-    # Формируем безопасный промпт
     prompt = f"""
-You are an expert in academic document structure analysis.
+You are a system that extracts clean document structure.
 
-Given the following text (cleaned OCR output) and classification metadata,
-identify the logical structure of the document. Return JSON only.
+Input text (cleaned):
+\"\"\"{cleaned_text[:6000]}\"\"\"
 
-CLASSIFICATION:
-{classification}
+Document type: {classification.get("document_type")}
+Main topics: {classification.get("main_topics")}
 
-TEXT:
-{text[:4000]}  # truncate to avoid overload
-
-Return strictly this JSON format:
+TASK:
+Return ONLY JSON list of sections. Example:
 
 [
   {{
-    "title": "Section name",
-    "level": 1,
-    "page_start": null,
-    "page_end": null
+    "title": "Chapter 1. Introduction",
+    "topics": ["topic A", "topic B"]
+  }},
+  {{
+    "title": "Chapter 2. Logic Basics",
+    "topics": ["topic C"]
   }}
 ]
+
+Rules:
+- No explanations.
+- No markdown.
+- MUST be valid JSON.
 """
 
     try:
-        raw = run_gpt(prompt, max_tokens=800)
-        logger.info("[STRUCTURE] Raw LLM output received")
+        raw = await run_gpt(prompt, model="gpt-4o-mini")
 
+        logger.info(f"[STRUCTURE] Raw model output (first 200 chars): {raw[:200]}")
+
+        # Try to parse JSON
         import json
-        structure = json.loads(raw)
+        data = json.loads(raw)
 
-        if not isinstance(structure, list):
-            logger.error("[STRUCTURE] Output is not a list")
-            return []
-
-        return structure
+        if isinstance(data, list):
+            return data
+        else:
+            logger.warning("[STRUCTURE] Model returned non-list, wrapping")
+            return list(data)
 
     except Exception as e:
         logger.error(f"[STRUCTURE] ERROR: {e}")
+        # Fail gracefully — structure is optional
         return []
