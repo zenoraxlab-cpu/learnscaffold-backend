@@ -47,9 +47,13 @@ def set_status(file_id: str, status: TaskStatus, details: dict = None, msg: str 
 # ---------------------------------------------------------
 # ANALYZE
 # ---------------------------------------------------------
-@router.post("/analyze/")
-async def analyze(file_id: str):
+@router.post("/")
+async def analyze(payload: dict):
+    file_id = payload.get("file_id")
     logger.info(f"[ANALYZE] Start → {file_id}")
+
+    if not file_id:
+        raise HTTPException(status_code=400, detail="file_id missing")
 
     set_status(file_id, TaskStatus.ANALYZING)
 
@@ -114,7 +118,6 @@ async def analyze(file_id: str):
         set_status(file_id, TaskStatus.READY)
         logger.info("[ANALYZE] DONE")
 
-        # FRONTEND REQUIRES EXACT FORMAT:
         return {"analysis": analysis_data}
 
     except Exception as e:
