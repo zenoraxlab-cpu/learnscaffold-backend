@@ -46,9 +46,24 @@ def set_status(file_id: str, status: TaskStatus, details: dict = None, msg: str 
 # ---------------------------------------------------------
 # ANALYZE — allow /analyze and /analyze/
 # ---------------------------------------------------------
+
 @router.post("/analyze")
 @router.post("/analyze/")
-async def analyze(file_id: str = Body(...)):
+async def analyze(payload = Body(...)):
+    """
+    Accepts:
+      { "file_id": "abc123" }
+    or plain:
+      "abc123"
+    """
+
+    # Extract file_id from body
+    if isinstance(payload, dict) and "file_id" in payload:
+        file_id = payload["file_id"]
+    else:
+        # plain string
+        file_id = str(payload)
+
     logger.info(f"[ANALYZE] Start → {file_id}")
 
     set_status(file_id, TaskStatus.ANALYZING)
@@ -73,7 +88,7 @@ async def analyze(file_id: str = Body(...)):
         set_status(file_id, TaskStatus.CLEANING)
         cleaned = clean_text(full_text)
 
-        # Detect language
+        # Language detect
         try:
             from langdetect import detect
             document_language = detect(cleaned[:5000]) if cleaned.strip() else "en"
@@ -90,11 +105,10 @@ async def analyze(file_id: str = Body(...)):
         set_status(file_id, TaskStatus.CLASSIFYING)
         classification = classify_document(chunks)
 
-        # STRUCTURE (async)
+        # Structure (async!)
         set_status(file_id, TaskStatus.STRUCTURE)
         structure = await extract_structure(cleaned, classification)
 
-        # Build final JSON
         analysis_data = {
             "file_id": file_id,
             "document_type": classification.get("document_type", "text"),
@@ -104,7 +118,7 @@ async def analyze(file_id: str = Body(...)):
             "structure": structure,
             "document_language": document_language,
             "length_chars": len(cleaned),
-            "pages": page_total,
+            "pages": page_total
         }
 
         save_path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
