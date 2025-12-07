@@ -8,95 +8,112 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------
-# 1. Smart fuzzy matching: topic → PDF page
+# 1. Page mapping: match lesson titles ↔ structure titles/topics
 # ---------------------------------------------------------------------
 def attach_source_pages(plan_days, structure):
     """
-    Привязка страниц PDF к урокам по смыслу:
-      ✔ подстрока
-      ✔ пересечение ключевых слов
+    Привязывает PDF-страницы к урокам на основе структуры вида:
+    {
+        "title": "Chapter...",
+        "topics": ["...", "..."],
+        "pages": [3,4,5]
+    }
     """
 
     indexed = []
 
-    # Подготовка структуры тем из анализа
+    # Подготовка структуры
     for block in structure:
-        topic = block.get("topic")
-        page = block.get("page")
-        if not topic or not page:
-            continue
+        title = (block.get("title") or "").lower().strip()
+        topics = block.get("topics") or []
+        pages = block.get("pages") or []
 
-        topic_l = topic.lower()
+        if not pages:
+            continue  # пропускаем блоки без страниц
+
+        # Создаём набор токенов (title + topics)
+        tokens = set(title.replace(",", " ").replace(";", " ").split())
+        for t in topics:
+            tokens.update(str(t).lower().split())
 
         indexed.append({
-            "topic": topic_l,
-            "tokens": set(topic_l.replace(",", " ").replace(";", " ").split()),
-            "page": page
+            "title": title,
+            "tokens": tokens,
+            "pages": pages
         })
 
     # Привязка страниц к каждому уроку
     for lesson in plan_days:
-        title = (lesson.get("title") or "").lower()
-        title_tokens = set(title.replace(",", " ").replace(";", " ").split())
+        lt = (lesson.get("title") or "").lower().strip()
+        lt_tokens = set(lt.replace(",", " ").replace(";", " ").split())
+
         matched = []
 
         for item in indexed:
-            topic = item["topic"]
+            struct_title = item["title"]
 
-            # 1) Прямое совпадение по подстроке
-            if topic in title or title in topic:
-                matched.append(item["page"])
+            # 1) Прямое совпадение по заголовку
+            if struct_title in lt or lt in struct_title:
+                matched.extend(item["pages"])
                 continue
 
-            # 2) Семантическое совпадение по токенам
-            if len(title_tokens.intersection(item["tokens"])) >= 2:
-                matched.append(item["page"])
+            # 2) ≥2 общих токена → семантический матч
+            if len(lt_tokens.intersection(item["tokens"])) >= 2:
+                matched.extend(item["pages"])
 
+        # Уникальные страницы
         lesson["source_pages"] = sorted(set(matched))
 
     return plan_days
 
 
 # ---------------------------------------------------------------------
-# 2. Универсальный парсер структуры плана (любой формат → days[])
+# 2. Нормализация плана (любой формат → list)
 # ---------------------------------------------------------------------
-def normalize_plan(raw_plan):
+def normalize_plan(raw):
     """
-    Приводит план от LLM к универсальному виду:
-      → всегда возвращает list[dict]
+    Приводит результат LLM к формату list[dict].
+    Поддерживает:
+      - { plan: { days: [...] } }
+      - { plan: [...] }
+      - [ ... ]
     """
 
-    # Формат: { "plan": { "days": [...] } }
-    if isinstance(raw_plan, dict) and "plan" in raw_plan and isinstance(raw_plan["plan"], dict):
-        return raw_plan["plan"].get("days", [])
+    if isinstance(raw, dict):
 
-    # Формат: { "plan": [ ... ] }
-    if isinstance(raw_plan, dict) and isinstance(raw_plan.get("plan"), list):
-        return raw_plan["plan"]
+        # { "plan": { "days": [...] } }
+        if "plan" in raw and isinstance(raw["plan"], dict):
+            days = raw["plan"].get("days")
+            if isinstance(days, list):
+                return days
 
-    # Формат: [...] (просто список уроков)
-    if isinstance(raw_plan, list):
-        return raw_plan
+        # { "plan": [ ... ] }
+        if "plan" in raw and isinstance(raw["plan"], list):
+            return raw["plan"]
 
-    logger.error(f"[ERROR] Unexpected plan format: {raw_plan}")
-    raise HTTPException(status_code=500, detail="Invalid plan format")
+    # План уже является списком
+    if isinstance(raw, list):
+        return raw
+
+    logger.error(f"[ERROR] Unexpected plan format: {raw}")
+    raise HTTPException(status_code=500, detail="Invalid plan format returned by LLM")
 
 
 # ---------------------------------------------------------------------
-# 3. Основной endpoint /generate
+# 3. Основной endpoint: /generate
 # ---------------------------------------------------------------------
 @router.post("")
 @router.post("/")
 async def generate(payload: dict):
 
-    print("🔥🔥🔥 BACKEND /generate CALLED")
+    print("🔥🔥🔥 BACKEND /generate CALLED 🔥🔥🔥")
     logger.warning(f"[DEBUG PAYLOAD] {payload}")
 
-    # -------- Проверка входных параметров ----------
     file_id = payload.get("file_id")
     days = payload.get("days")
     language = payload.get("language")
 
+    # Проверка входа
     if not file_id or days is None or not language:
         raise HTTPException(status_code=422, detail="Missing required parameters")
 
@@ -105,9 +122,9 @@ async def generate(payload: dict):
     except:
         raise HTTPException(status_code=422, detail="Invalid 'days' value")
 
-    logger.info(f"[GENERATE] Start → file={file_id} days={days} lang={language}")
+    logger.info(f"[GENERATE] Start: file_id={file_id} days={days} lang={language}")
 
-    # -------- Загрузка анализа из /analyze ----------
+    # Загружаем анализ из /analyze
     analysis = load_saved_analysis(file_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="No saved analysis for this file")
@@ -119,7 +136,7 @@ async def generate(payload: dict):
     logger.warning(f"[DEBUG STRUCTURE] {structure}")
 
     try:
-        # -------- Генерация уроков через LLM --------
+        # Вызываем LLM (генерация дневного плана)
         raw_plan = await generate_study_plan(
             file_id=file_id,
             days=days,
@@ -129,20 +146,20 @@ async def generate(payload: dict):
             document_language=document_language,
         )
 
-        # -------- Приведение формата плана --------
+        # Приведение формата
         plan_days = normalize_plan(raw_plan)
 
-        # -------- Привязка страниц PDF --------
+        # Привязываем страницы
         plan_days = attach_source_pages(plan_days, structure)
 
-        # -------- Debug поля --------
+        # Debug
         debug_titles = [d.get("title") for d in plan_days]
         debug_pages = [d.get("source_pages") for d in plan_days]
 
         logger.warning(f"[DEBUG TITLES] {debug_titles}")
         logger.warning(f"[DEBUG PAGES] {debug_pages}")
 
-        # -------- Возврат итогового ответа --------
+        # Итоговый ответ
         return {
             "status": "ok",
             "file_id": file_id,
@@ -150,7 +167,7 @@ async def generate(payload: dict):
             "analysis": analysis,
             "plan": {"days": plan_days},
 
-            # DEBUG FIELDS
+            # DEBUG
             "debug_structure": structure,
             "debug_titles": debug_titles,
             "debug_pages_attached": debug_pages,
