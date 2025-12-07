@@ -63,7 +63,7 @@ async def analyze(payload = Body(...)):
     else:
         # plain string
         file_id = str(payload)
-
+    logger.info(f"[DEBUG] RAW PAYLOAD = {payload} (type={type(payload)})")
     logger.info(f"[ANALYZE] Start → {file_id}")
 
     set_status(file_id, TaskStatus.ANALYZING)
