@@ -131,10 +131,10 @@ async def analyze(payload = Body(...)):
         return {"analysis": analysis_data}
 
     except Exception as e:
-        logger.error("[ANALYZE] ERROR")
-        logger.exception(e)
-        set_status(file_id, TaskStatus.ERROR, msg=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    logger.exception("[ANALYZE] FULL ERROR TRACEBACK:")
+    set_status(file_id, TaskStatus.ERROR, msg=str(e))
+    raise HTTPException(status_code=500, detail=str(e))
+
 
 
 # ---------------------------------------------------------
