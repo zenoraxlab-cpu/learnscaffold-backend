@@ -136,16 +136,18 @@ async def analyze(payload = Body(...)):
         return {"analysis": analysis_data}
 
     except Exception as e:
-    logger.error("=== ANALYZE FAILED ===")
-    logger.error(f"FILE ID → {file_id}")
-    logger.error(f"ERROR TYPE → {type(e).__name__}")
-    logger.error(f"ERROR MESSAGE → {str(e)}")
-    logger.exception(e)
+        logger.error("=== ANALYZE FAILED ===")
+        logger.error(f"FILE ID → {file_id}")
+        logger.error(f"ERROR TYPE → {type(e).__name__}")
+        logger.error(f"ERROR MESSAGE → {str(e)}")
+        logger.exception(e)
 
-    set_status(file_id, TaskStatus.ERROR, msg=str(e))
+        set_status(file_id, TaskStatus.ERROR, msg=str(e))
 
-    raise HTTPException(status_code=500, detail="LLM request failed")
+        raise HTTPException(status_code=500, detail="LLM request failed")
 
+
+ 
 
 
 # ---------------------------------------------------------
