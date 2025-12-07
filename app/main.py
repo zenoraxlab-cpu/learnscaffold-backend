@@ -39,7 +39,7 @@ app.add_middleware(
 app.include_router(upload.router, prefix="/upload", tags=["Upload"])
 
 # Document analysis
-app.include_router(analyze.router, prefix="/analyze", tags=["Analyze"])
+app.include_router(analyze.router, prefix="", tags=["Analyze"])
 
 # Study plan generation
 app.include_router(generate.router, prefix="/generate", tags=["Generate"])
