@@ -7,9 +7,8 @@ from app.routes.analyze import load_saved_analysis
 router = APIRouter()
 
 
-# ---------------------------------------------------------
-# GENERATE STUDY PLAN
-# ---------------------------------------------------------
+# allow POST /generate and POST /generate/
+@router.post("")
 @router.post("/")
 async def generate(payload: dict):
 
@@ -21,14 +20,14 @@ async def generate(payload: dict):
     Expects:
       - file_id: str
       - days: int
-      - language: str
+      - language: str (target language for the plan)
     """
 
     file_id = payload.get("file_id")
     days = payload.get("days")
     language = payload.get("language")
 
-    # Validation
+    # Basic validation
     if not file_id or days is None or not language:
         raise HTTPException(status_code=422, detail="Missing required parameters")
 
@@ -41,7 +40,7 @@ async def generate(payload: dict):
         f"[GENERATE] Start → file_id='{file_id}' days={days} language='{language}'"
     )
 
-    # Load analysis JSON saved during /analyze
+    # Load analysis JSON that was saved during /analyze
     analysis = load_saved_analysis(file_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="No saved analysis for this file")
@@ -51,6 +50,7 @@ async def generate(payload: dict):
     document_language = analysis.get("document_language", "en")
 
     try:
+        # Single LLM call that generates the whole plan
         plan = await generate_study_plan(
             file_id=file_id,
             days=days,
