@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from enum import Enum
-from typing import Dict
 import os
 import json
+from typing import Dict
 
 from app.utils.logger import logger
 from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
@@ -10,7 +10,6 @@ from app.services.text_cleaner import clean_text
 from app.services.chunker import chunk_text
 from app.services.classifier import classify_document
 from app.services.structure_extractor import extract_structure
-from app.services.google_ocr import google_ocr_pdf
 from app.config import UPLOAD_DIR
 
 router = APIRouter()
@@ -60,81 +59,45 @@ async def analyze(file_id: str):
         if not os.path.exists(input_path):
             raise FileNotFoundError(f"File not found: {input_path}")
 
-        # ---------------------------------------------------------
-        # Extract pages
-        # ---------------------------------------------------------
+        # Extract pages metadata
         pages = extract_pdf_pages(input_path)
         page_total = len(pages)
 
         set_status(file_id, TaskStatus.EXTRACTING, {"pages": page_total})
 
-        logger.info(f"[PAGES] Found {page_total} pages")
+        # Text extraction
+        full_text = await extract_pdf_text(input_path)
+        logger.info(f"[TEXT] Extracted chars = {len(full_text)}")
 
-        # ---------------------------------------------------------
-        # OCR OR TEXT
-        # ---------------------------------------------------------
-        if page_total > 0 and pages[0].get("ocr_needed", False):
-            logger.info("[OCR] Using Google OCR")
-
-            full_text = ""
-            for idx, page in enumerate(pages):
-                part = await google_ocr_pdf(input_path)
-                full_text += part + "\n"
-
-                set_status(
-                    file_id,
-                    TaskStatus.EXTRACTING_TEXT,
-                    {"page_current": idx + 1, "page_total": page_total},
-                )
-        else:
-            logger.info("[PDF] Normal text extraction")
-            full_text = await extract_pdf_text(input_path)
-
-        logger.info(f"[TEXT] Extracted chars: {len(full_text)}")
-
-        # ---------------------------------------------------------
         # Clean text
-        # ---------------------------------------------------------
         set_status(file_id, TaskStatus.CLEANING)
         cleaned = clean_text(full_text)
-        logger.info(f"[CLEAN] Cleaned length = {len(cleaned)}")
 
-        # ---------------------------------------------------------
-        # Detect language
-        # ---------------------------------------------------------
-        from langdetect import detect
+        # Language detect
+        try:
+            from langdetect import detect
+            document_language = detect(cleaned[:5000]) if cleaned.strip() else "en"
+        except:
+            document_language = "en"
 
-        document_language = detect(cleaned[:5000]) if cleaned.strip() else "en"
         logger.info(f"[LANG] → {document_language}")
 
-        # ---------------------------------------------------------
-        # Chunk text
-        # ---------------------------------------------------------
+        # Chunk
         set_status(file_id, TaskStatus.CHUNKING)
         chunks = chunk_text(cleaned)
 
-        # ---------------------------------------------------------
         # Classify
-        # ---------------------------------------------------------
         set_status(file_id, TaskStatus.CLASSIFYING)
         classification = classify_document(chunks)
 
-        # ---------------------------------------------------------
-        # Extract structure
-        # ---------------------------------------------------------
+        # Structure
         set_status(file_id, TaskStatus.STRUCTURE)
         structure = extract_structure(cleaned, classification)
 
-        logger.info(f"[STRUCTURE] Units found: {len(structure)}")
-
-        # ---------------------------------------------------------
-        # BUILD RESULT JSON
-        # ---------------------------------------------------------
-        save_path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
-
+        # Build JSON
         analysis_data = {
             "file_id": file_id,
-            "document_type": classification.get("document_type", ""),
+            "document_type": classification.get("document_type", "text"),
             "main_topics": classification.get("main_topics", []),
             "summary": classification.get("summary", ""),
             "recommended_days": classification.get("recommended_days", 7),
@@ -144,14 +107,14 @@ async def analyze(file_id: str):
             "pages": page_total
         }
 
-        # Save JSON
+        save_path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
         with open(save_path, "w", encoding="utf-8") as f:
             json.dump(analysis_data, f, ensure_ascii=False, indent=2)
 
         set_status(file_id, TaskStatus.READY)
         logger.info("[ANALYZE] DONE")
 
-        # IMPORTANT: frontend expects { analysis: {...} }
+        # FRONTEND REQUIRES EXACT FORMAT:
         return {"analysis": analysis_data}
 
     except Exception as e:
