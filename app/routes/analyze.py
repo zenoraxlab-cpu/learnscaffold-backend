@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Body
 from enum import Enum
 import os
 import json
@@ -13,7 +13,6 @@ from app.services.structure_extractor import extract_structure
 from app.config import UPLOAD_DIR
 
 router = APIRouter()
-
 
 # ---------------------------------------------------------
 # TASK STATUS
@@ -49,7 +48,7 @@ def set_status(file_id: str, status: TaskStatus, details: dict = None, msg: str 
 # ---------------------------------------------------------
 @router.post("/analyze")
 @router.post("/analyze/")
-async def analyze(file_id: str):
+async def analyze(file_id: str = Body(...)):
     logger.info(f"[ANALYZE] Start → {file_id}")
 
     set_status(file_id, TaskStatus.ANALYZING)
@@ -105,7 +104,7 @@ async def analyze(file_id: str):
             "structure": structure,
             "document_language": document_language,
             "length_chars": len(cleaned),
-            "pages": page_total
+            "pages": page_total,
         }
 
         save_path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
@@ -125,12 +124,13 @@ async def analyze(file_id: str):
 
 
 # ---------------------------------------------------------
-# GET STATUS — allow both / and no /
+# GET STATUS — allow both / and / 
 # ---------------------------------------------------------
 @router.get("/analyze/status/{file_id}")
 @router.get("/analyze/status/{file_id}/")
 def get_status(file_id: str):
     return task_status.get(file_id, {"file_id": file_id, "status": "unknown"})
+
 
 
 # ---------------------------------------------------------
