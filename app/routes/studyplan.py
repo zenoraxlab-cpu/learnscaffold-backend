@@ -49,33 +49,25 @@ def build_lesson_context(lesson: dict) -> str:
 
 
 # ---------------------------------------------------------------------
-# NEW: Map lessons → PDF pages by semantic topic match
+# NEW: semantic topic → PDF pages
 # ---------------------------------------------------------------------
 def attach_source_pages(plan_days: List[dict], structure: List[dict]) -> List[dict]:
-    """
-    Привязать к каждому учебному дню страницы PDF по смыслу.
-    Используем структуру документа: topics + pages.
-    """
-
-    # Словарь topic → [pages]
     topic_pages = {}
+
     for block in structure:
         topic = block.get("topic")
         page = block.get("page")
         if topic and page:
             topic_pages.setdefault(topic.lower(), []).append(page)
 
-    # Назначаем страницы каждому уроку
     for lesson in plan_days:
         title = (lesson.get("title") or "").lower()
         matched = []
 
-        # Если заголовок урока содержит название темы документа или наоборот
         for topic, pages in topic_pages.items():
             if topic in title or title in topic:
                 matched.extend(pages)
 
-        # Удаляем дубли, сортируем
         lesson["source_pages"] = sorted(set(matched))
 
     return plan_days
@@ -96,9 +88,7 @@ async def generate_study_plan(
         f"flashcards={include_flashcards}"
     )
 
-    # -----------------------------------------------------------------
-    # 1. Resolve file path
-    # -----------------------------------------------------------------
+    # 1. resolve file path
     file_path = None
     for fname in os.listdir(UPLOAD_DIR):
         if fname.startswith(file_id):
@@ -108,14 +98,12 @@ async def generate_study_plan(
     if not file_path:
         raise HTTPException(status_code=404, detail="File not found")
 
-    # -----------------------------------------------------------------
-    # 2. Extract structure (semantic topics with page markers)
-    # -----------------------------------------------------------------
+    # 2. extract structure (topics + pages)
     structure = extract_structure(file_path) or []
+    print("STRUCTURE DEBUG:", structure)
+    logger.warning(f"STRUCTURE DEBUG: {structure}")
 
-    # -----------------------------------------------------------------
-    # 3. Count PDF pages
-    # -----------------------------------------------------------------
+    # 3. count pages
     try:
         pages = await extract_pdf_pages(file_path)
         pages_count = len(pages)
@@ -123,34 +111,23 @@ async def generate_study_plan(
         logger.error(f"[GENERATE] Page extraction failed: {e}")
         pages_count = 0
 
-    # -----------------------------------------------------------------
-    # 4. Extract text — with Google OCR fallback
-    # -----------------------------------------------------------------
+    # 4. extract text
     raw_text = await extract_pdf_text(file_path)
-
     if not raw_text or not raw_text.strip():
         raise HTTPException(status_code=500, detail="Failed to extract text from PDF")
 
-    # -----------------------------------------------------------------
-    # 5. Clean text
-    # -----------------------------------------------------------------
+    # 5. clean text
     cleaned = clean_text(raw_text)
 
-    # -----------------------------------------------------------------
-    # 6. Chunk text
-    # -----------------------------------------------------------------
+    # 6. chunking
     chunks = chunk_text(cleaned, max_chars=2500, overlap=200)
     if not chunks:
         raise HTTPException(status_code=500, detail="Chunking failed")
 
-    # -----------------------------------------------------------------
-    # 7. Classification
-    # -----------------------------------------------------------------
+    # 7. classification
     analysis = classify_document(chunks[0])
 
-    # -----------------------------------------------------------------
-    # 8. Generate lessons
-    # -----------------------------------------------------------------
+    # 8. generate lessons
     plan_days: List[dict] = []
 
     for day in range(1, days + 1):
@@ -163,7 +140,6 @@ async def generate_study_plan(
             structure=structure,
         )
 
-        # Flashcards if needed
         if include_flashcards:
             ctx = build_lesson_context(lesson)
             if ctx.strip():
@@ -174,11 +150,13 @@ async def generate_study_plan(
                 )
 
         plan_days.append(lesson)
+        print("LESSON TITLE:", lesson.get("title"))
+        logger.warning(f"LESSON TITLE: {lesson.get('title')}")
 
-    # -----------------------------------------------------------------
-    # 9. NEW: Map semantic topics → real PDF pages
-    # -----------------------------------------------------------------
+    # 9. attach pages
     plan_days = attach_source_pages(plan_days, structure)
+    print("PAGES ATTACHED:", [d.get("source_pages") for d in plan_days])
+    logger.warning(f"PAGES ATTACHED: {[d.get('source_pages') for d in plan_days]}")
 
     logger.info("[GENERATE] Completed OK")
 
