@@ -4,71 +4,69 @@ from app.services.pdf_extractor import extract_pdf_pages
 import json
 
 
+MAX_PAGES = 3                # используем только первые 3 страницы
+MAX_CHARS_PER_PAGE = 2000    # ограничиваем размер каждой страницы
+MAX_TOTAL_PROMPT = 7000      # общий предел текста для GPT
+
+
 async def extract_structure(file_path: str):
     """
-    Extracts semantic structure of a PDF with page numbers.
-    Returns list of sections:
-    [
-        {
-            "title": "...",
-            "topics": [...],
-            "pages": [3,4,5]
-        }
-    ]
+    Extract semantic structure with page numbers,
+    but optimized to avoid memory spikes.
     """
 
-    logger.info("[STRUCTURE] Starting PDF-based structure extraction")
+    logger.info("[STRUCTURE] Starting structure extraction")
 
-    # 1. Load pages
+    # 1. Load PDF pages
     try:
         pages = await extract_pdf_pages(file_path)
     except Exception as e:
         logger.error(f"[STRUCTURE] Page extraction failed: {e}")
         return []
 
-    if not pages or len(pages) == 0:
+    if not pages:
         logger.warning("[STRUCTURE] No pages extracted")
         return []
 
-    # Limit text to avoid overloading GPT
-    MAX_PAGES = 12
+    # 2. Take only the first few pages
     sampled = pages[:MAX_PAGES]
 
-    # Build unified text with page markers
-    page_joined = "\n\n".join(
-        f"=== PAGE {i+1} ===\n{content}"
-        for i, content in enumerate(sampled)
-    )
+    # 3. Trim each page to avoid huge payloads
+    trimmed_pages = []
+    for i, content in enumerate(sampled):
+        if not content:
+            continue
+        trimmed = content[:MAX_CHARS_PER_PAGE]
+        trimmed_pages.append(f"=== PAGE {i+1} ===\n{trimmed}")
+
+    # 4. Build limited document text
+    page_joined = "\n\n".join(trimmed_pages)
+
+    # Hard trim global size
+    if len(page_joined) > MAX_TOTAL_PROMPT:
+        page_joined = page_joined[:MAX_TOTAL_PROMPT]
+
+    logger.info(f"[STRUCTURE] Prompt size: {len(page_joined)} chars")
 
     prompt = f"""
-You extract the semantic structure of a PDF textbook.
-
-Below is the document content with explicit PAGE markers.
-Use these page numbers to assign pages to each section.
+Extract semantic structure of the textbook.
 
 Return ONLY JSON list of sections:
 [
   {{
-    "title": "Chapter 1. Introduction",
-    "topics": ["logic", "thinking"],
-    "pages": [1, 2, 3]
-  }},
-  {{
-    "title": "Japanese Crosswords",
-    "topics": ["puzzles", "logic"],
-    "pages": [7, 8]
+    "title": "...",
+    "topics": ["..."],
+    "pages": [1, 2]
   }}
 ]
 
 Rules:
 - MUST be valid JSON.
-- Pages MUST be integers.
-- Pages correspond to the PAGE markers you see.
-- Do NOT invent pages outside the provided range.
-- No commentary, no markdown.
+- Pages must correspond only to PAGE markers below.
+- No commentary.
 
-Document text:
-\"\"\" 
+Document:
+\"\"\"
 {page_joined}
 \"\"\"
 """
@@ -82,7 +80,6 @@ Document text:
         if isinstance(data, list):
             return data
 
-        # fallback
         return list(data)
 
     except Exception as e:
