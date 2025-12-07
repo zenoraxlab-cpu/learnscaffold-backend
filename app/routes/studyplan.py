@@ -41,31 +41,42 @@ def build_lesson_context(lesson: dict) -> str:
     summary = lesson.get("summary")
     if summary:
         parts.append(
-            "Summary:\n" + (summary if isinstance(summary, str) else "\n".join(summary))
+            "Summary:\n"
+            + (summary if isinstance(summary, str) else "\n".join(summary))
         )
 
     return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------
-# Add source_pages to each lesson
+# NEW: Map lessons → PDF pages by semantic topic match
 # ---------------------------------------------------------------------
-def attach_page_links(plan_days: List[dict], pages_count: int) -> List[dict]:
-    total_days = len(plan_days)
-    if total_days == 0 or pages_count <= 0:
-        return plan_days
+def attach_source_pages(plan_days: List[dict], structure: List[dict]) -> List[dict]:
+    """
+    Привязать к каждому учебному дню страницы PDF по смыслу.
+    Используем структуру документа: topics + pages.
+    """
 
-    pages_per_day = max(1, pages_count // total_days)
+    # Словарь topic → [pages]
+    topic_pages = {}
+    for block in structure:
+        topic = block.get("topic")
+        page = block.get("page")
+        if topic and page:
+            topic_pages.setdefault(topic.lower(), []).append(page)
 
-    for i, lesson in enumerate(plan_days):
-        if lesson.get("source_pages"):
-            continue
+    # Назначаем страницы каждому уроку
+    for lesson in plan_days:
+        title = (lesson.get("title") or "").lower()
+        matched = []
 
-        start = i * pages_per_day + 1
-        end = pages_count if i == total_days - 1 else start + pages_per_day - 1
-        end = min(end, pages_count)
+        # Если заголовок урока содержит название темы документа или наоборот
+        for topic, pages in topic_pages.items():
+            if topic in title or title in topic:
+                matched.extend(pages)
 
-        lesson["source_pages"] = list(range(start, end + 1))
+        # Удаляем дубли, сортируем
+        lesson["source_pages"] = sorted(set(matched))
 
     return plan_days
 
@@ -98,7 +109,7 @@ async def generate_study_plan(
         raise HTTPException(status_code=404, detail="File not found")
 
     # -----------------------------------------------------------------
-    # 2. Extract structure (chapters, headings)
+    # 2. Extract structure (semantic topics with page markers)
     # -----------------------------------------------------------------
     structure = extract_structure(file_path) or []
 
@@ -113,7 +124,7 @@ async def generate_study_plan(
         pages_count = 0
 
     # -----------------------------------------------------------------
-    # 4. Extract text — with Google OCR fallback inside
+    # 4. Extract text — with Google OCR fallback
     # -----------------------------------------------------------------
     raw_text = await extract_pdf_text(file_path)
 
@@ -126,7 +137,7 @@ async def generate_study_plan(
     cleaned = clean_text(raw_text)
 
     # -----------------------------------------------------------------
-    # 6. Split into chunks
+    # 6. Chunk text
     # -----------------------------------------------------------------
     chunks = chunk_text(cleaned, max_chars=2500, overlap=200)
     if not chunks:
@@ -138,7 +149,7 @@ async def generate_study_plan(
     analysis = classify_document(chunks[0])
 
     # -----------------------------------------------------------------
-    # 8. Generate daily lessons
+    # 8. Generate lessons
     # -----------------------------------------------------------------
     plan_days: List[dict] = []
 
@@ -152,7 +163,7 @@ async def generate_study_plan(
             structure=structure,
         )
 
-        # Add flashcards if requested
+        # Flashcards if needed
         if include_flashcards:
             ctx = build_lesson_context(lesson)
             if ctx.strip():
@@ -165,9 +176,9 @@ async def generate_study_plan(
         plan_days.append(lesson)
 
     # -----------------------------------------------------------------
-    # 9. Map lessons → PDF pages
+    # 9. NEW: Map semantic topics → real PDF pages
     # -----------------------------------------------------------------
-    plan_days = attach_page_links(plan_days, pages_count)
+    plan_days = attach_source_pages(plan_days, structure)
 
     logger.info("[GENERATE] Completed OK")
 
