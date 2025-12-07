@@ -112,7 +112,8 @@ async def analyze(payload = Body(...)):
         logger.warning(f"First 500 chars: {cleaned[:500]}")
         logger.warning(f"Classification: {classification}")
         logger.warning("=== DEBUG LLM INPUT END ===")
-        structure = await extract_structure(cleaned, classification)
+        structure = await extract_structure(input_path)
+
 
         analysis_data = {
             "file_id": file_id,
