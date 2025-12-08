@@ -99,7 +99,7 @@ async def analyze(payload=Body(...)):
             document_language = "en"
 
         logger.info(f"[LANG] → {document_language}")
-
+------------
         # -----------------------
         # Chunking
         # -----------------------
@@ -113,11 +113,11 @@ async def analyze(payload=Body(...)):
         classification = classify_document(chunks)
 
         # -----------------------
-        # STRUCTURE (PDF → LLM fallback)
+        # STRUCTURE EXTRACTION
         # -----------------------
         set_status(file_id, TaskStatus.STRUCTURE)
 
-        # Try PDF headings
+        # 1) Try PDF headings
         try:
             structure = extract_structure(input_path) or []
             logger.info(f"[STRUCTURE] Extracted PDF headings: {len(structure)}")
@@ -125,20 +125,19 @@ async def analyze(payload=Body(...)):
             logger.error(f"[STRUCTURE] Failed: {se}")
             structure = []
 
-        # Fallback → LLM
+        # 2) If empty → LLM fallback
         if not structure:
             logger.warning("[STRUCTURE] PDF returned 0 headings → switching to LLM fallback")
-
             from app.services.llm_structure import extract_structure_llm
 
             try:
-                limited_text = cleaned[:200000]
-                structure = extract_structure_llm(limited_text, document_language) or []
+                structure = extract_structure_llm(cleaned[:200000], document_language) or []
                 logger.warning(f"[LLM_STRUCTURE] Returned blocks: {len(structure)}")
             except Exception as le:
                 logger.error(f"[LLM_STRUCTURE] Failed: {le}")
                 structure = []
 
+        # 3) Final fail-safe
         if not structure:
             logger.error("[STRUCTURE] No structure extracted (PDF + LLM failed)")
 
@@ -165,33 +164,6 @@ async def analyze(payload=Body(...)):
         logger.info("[ANALYZE] Completed OK")
 
         return {"analysis": analysis_data}
-
-    except Exception as e:
-        logger.error("=== ANALYZE FAILED ===")
-        logger.error(f"FILE → {file_id}")
-        logger.error(f"ERROR → {type(e).__name__}: {str(e)}")
-        logger.exception(e)
-
-        set_status(file_id, TaskStatus.ERROR, msg=str(e))
-
-        try:
-            send_telegram_alert(
-                f"❗ ANALYZE FAILED\n"
-                f"File ID: {file_id}\n"
-                f"Ошибка: {str(e)}\n"
-                f"Файл требует ручной обработки."
-            )
-        except Exception as te:
-            logger.error(f"Telegram notifier error: {te}")
-
-        return {
-            "status": "delayed",
-            "file_id": file_id,
-            "message": (
-                "Your file requires extended processing. "
-                "We will send results to your email when ready."
-            ),
-        }
 
 
 # ---------------------------------------------------------
