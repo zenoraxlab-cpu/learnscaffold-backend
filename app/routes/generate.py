@@ -8,12 +8,16 @@ from app.services.notifier import send_telegram_alert
 router = APIRouter()
 
 # ---------------------------------------------------------------------
-# 1. Page mapping: match lesson titles ↔ structure titles/topics
+# 1. Page mapping: match lesson titles ↔ structure blocks
 # ---------------------------------------------------------------------
 def attach_source_pages(plan_days, structure):
     """
-    Привязывает PDF-страницы к урокам.
+    Привязывает PDF-страницы к урокам:
+    - прямые совпадения
+    - частичные совпадения
+    - fuzzy matching через пересечение токенов
     """
+
     indexed = []
 
     # Подготовка структуры
@@ -25,6 +29,7 @@ def attach_source_pages(plan_days, structure):
         if not pages:
             continue
 
+        # токенизация
         tokens = set(title.replace(",", " ").replace(";", " ").split())
         for t in topics:
             tokens.update(str(t).lower().split())
@@ -40,21 +45,28 @@ def attach_source_pages(plan_days, structure):
         lt = (lesson.get("title") or "").lower().strip()
         lt_tokens = set(lt.replace(",", " ").replace(";", " ").split())
 
-        matched = []
+        matches = []
 
         for item in indexed:
-            struct_title = item["title"]
+            st = item["title"]
 
-            # прямое совпадение по заголовку
-            if struct_title in lt or lt in struct_title:
-                matched.extend(item["pages"])
+            # 1) Прямое входящее совпадение
+            if st in lt or lt in st:
+                matches.extend(item["pages"])
                 continue
 
-            # ≥2 общих токена — считаем, что это один и тот же блок
+            # 2) ≥2 общих токена → хорошее совпадение
             if len(lt_tokens.intersection(item["tokens"])) >= 2:
-                matched.extend(item["pages"])
+                matches.extend(item["pages"])
+                continue
 
-        lesson["source_pages"] = sorted(set(matched))
+            # 3) Один общий редкий токен, но длиной ≥ 6 символов (например: deduction, syllogism)
+            for tok in lt_tokens:
+                if len(tok) >= 6 and tok in item["tokens"]:
+                    matches.extend(item["pages"])
+                    break
+
+        lesson["source_pages"] = sorted(set(matches))
 
     return plan_days
 
@@ -64,21 +76,18 @@ def attach_source_pages(plan_days, structure):
 # ---------------------------------------------------------------------
 def normalize_plan(raw):
     """
-    Любой формат → list[dict].
+    Приводим любой формат LLM → list[dict].
     """
 
     if isinstance(raw, dict):
-        # { "plan": { "days": [...] } }
         if isinstance(raw.get("plan"), dict):
             days = raw["plan"].get("days")
             if isinstance(days, list):
                 return days
 
-        # { "plan": [ ... ] }
         if isinstance(raw.get("plan"), list):
             return raw["plan"]
 
-    # Уже список
     if isinstance(raw, list):
         return raw
 
@@ -87,7 +96,7 @@ def normalize_plan(raw):
 
 
 # ---------------------------------------------------------------------
-# 3. Основной endpoint: /generate
+# 3. Основной endpoint /generate
 # ---------------------------------------------------------------------
 @router.post("")
 @router.post("/")
@@ -148,7 +157,6 @@ async def generate(payload: dict):
             "days": days,
             "analysis": analysis,
             "plan": {"days": plan_days},
-
             "debug_structure": structure,
             "debug_titles": debug_titles,
             "debug_pages_attached": debug_pages,
@@ -169,7 +177,6 @@ async def generate(payload: dict):
         except Exception as te:
             logger.error(f"Telegram notifier error: {te}")
 
-        # Не роняем 500, а отдаём delayed → фронт потом адаптируем
         return {
             "status": "delayed",
             "file_id": file_id,
