@@ -10,12 +10,13 @@ from app.services.text_cleaner import clean_text
 from app.services.chunker import chunk_text
 from app.services.classifier import classify_document
 from app.services.structure_extractor import extract_structure
+from app.services.notifier import send_telegram_alert
 from app.config import UPLOAD_DIR
 
 router = APIRouter()
 
 # ---------------------------------------------------------
-# TASK STATUS
+# TASK STATUS STRUCTURE
 # ---------------------------------------------------------
 class TaskStatus(str, Enum):
     UPLOADED = "uploaded"
@@ -44,27 +45,26 @@ def set_status(file_id: str, status: TaskStatus, details: dict = None, msg: str 
 
 
 # ---------------------------------------------------------
-# ANALYZE — allow /analyze and /analyze/
+# MAIN ENDPOINT — /analyze
 # ---------------------------------------------------------
 
 @router.post("/analyze")
 @router.post("/analyze/")
-async def analyze(payload = Body(...)):
+async def analyze(payload=Body(...)):
     """
     Accepts:
       { "file_id": "abc123" }
-    or plain:
+    OR:
       "abc123"
     """
 
-    # Extract file_id from body
+    # Унификация входа
     if isinstance(payload, dict) and "file_id" in payload:
         file_id = payload["file_id"]
     else:
-        # plain string
         file_id = str(payload)
-    logger.info(f"[DEBUG] RAW PAYLOAD = {payload} (type={type(payload)})")
-    logger.info(f"[ANALYZE] Start → {file_id}")
+
+    logger.info(f"[ANALYZE] Start → file {file_id}")
 
     set_status(file_id, TaskStatus.ANALYZING)
 
@@ -74,21 +74,25 @@ async def analyze(payload = Body(...)):
         if not os.path.exists(input_path):
             raise FileNotFoundError(f"File not found: {input_path}")
 
+        # -----------------------
         # Extract pages metadata
+        # -----------------------
         pages = extract_pdf_pages(input_path)
         page_total = len(pages)
-
         set_status(file_id, TaskStatus.EXTRACTING, {"pages": page_total})
 
-        # Text extraction
+        # -----------------------
+        # Extract raw text (OCR fallback inside)
+        # -----------------------
         full_text = await extract_pdf_text(input_path)
-        logger.info(f"[TEXT] Extracted chars = {len(full_text)}")
+        logger.info(f"[TEXT] Extracted: {len(full_text)} chars")
 
-        # Clean text
         set_status(file_id, TaskStatus.CLEANING)
         cleaned = clean_text(full_text)
 
-        # Language detect
+        # -----------------------
+        # Detect language
+        # -----------------------
         try:
             from langdetect import detect
             document_language = detect(cleaned[:5000]) if cleaned.strip() else "en"
@@ -97,24 +101,28 @@ async def analyze(payload = Body(...)):
 
         logger.info(f"[LANG] → {document_language}")
 
+        # -----------------------
         # Chunking
+        # -----------------------
         set_status(file_id, TaskStatus.CHUNKING)
         chunks = chunk_text(cleaned)
 
+        # -----------------------
         # Classification
+        # -----------------------
         set_status(file_id, TaskStatus.CLASSIFYING)
         classification = classify_document(chunks)
 
-        # Structure (async!)
+        # -----------------------
+        # Structure (LLM)
+        # -----------------------
         set_status(file_id, TaskStatus.STRUCTURE)
-        logger.warning("=== DEBUG LLM INPUT START ===")
-        logger.warning(f"LLM text size: {len(cleaned)}")
-        logger.warning(f"First 500 chars: {cleaned[:500]}")
-        logger.warning(f"Classification: {classification}")
-        logger.warning("=== DEBUG LLM INPUT END ===")
+
         structure = await extract_structure(input_path)
 
-
+        # -----------------------
+        # SAVE ANALYSIS
+        # -----------------------
         analysis_data = {
             "file_id": file_id,
             "document_type": classification.get("document_type", "text"),
@@ -124,7 +132,7 @@ async def analyze(payload = Body(...)):
             "structure": structure,
             "document_language": document_language,
             "length_chars": len(cleaned),
-            "pages": page_total
+            "pages": page_total,
         }
 
         save_path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
@@ -132,33 +140,50 @@ async def analyze(payload = Body(...)):
             json.dump(analysis_data, f, ensure_ascii=False, indent=2)
 
         set_status(file_id, TaskStatus.READY)
-        logger.info("[ANALYZE] DONE")
+        logger.info("[ANALYZE] Completed OK")
 
         return {"analysis": analysis_data}
 
     except Exception as e:
+        # ---------------------------
+        # HANDLE FAILURE SAFELY
+        # ---------------------------
         logger.error("=== ANALYZE FAILED ===")
-        logger.error(f"FILE ID → {file_id}")
-        logger.error(f"ERROR TYPE → {type(e).__name__}")
-        logger.error(f"ERROR MESSAGE → {str(e)}")
+        logger.error(f"FILE → {file_id}")
+        logger.error(f"ERROR → {type(e).__name__}: {str(e)}")
         logger.exception(e)
 
         set_status(file_id, TaskStatus.ERROR, msg=str(e))
 
-        raise HTTPException(status_code=500, detail="LLM request failed")
+        # Telegram alert
+        try:
+            send_telegram_alert(
+                f"❗ ANALYZE FAILED\n"
+                f"File ID: {file_id}\n"
+                f"Ошибка: {str(e)}\n"
+                f"Файл требует ручной обработки."
+            )
+        except Exception as te:
+            logger.error(f"Telegram notifier error: {te}")
 
-
- 
+        # Вместо 500 → безопасный ответ
+        return {
+            "status": "delayed",
+            "file_id": file_id,
+            "message": (
+                "Your file requires extended processing. "
+                "We will send results to your email when ready."
+            ),
+        }
 
 
 # ---------------------------------------------------------
-# GET STATUS — allow both / and / 
+# GET STATUS
 # ---------------------------------------------------------
 @router.get("/analyze/status/{file_id}")
 @router.get("/analyze/status/{file_id}/")
 def get_status(file_id: str):
     return task_status.get(file_id, {"file_id": file_id, "status": "unknown"})
-
 
 
 # ---------------------------------------------------------
