@@ -114,11 +114,16 @@ async def analyze(payload=Body(...)):
         classification = classify_document(chunks)
 
         # -----------------------
-        # Structure (LLM)
+        # Structure (headings → pages)
         # -----------------------
         set_status(file_id, TaskStatus.STRUCTURE)
 
-        structure = await extract_structure(input_path)
+        try:
+            structure = extract_structure(input_path) or []
+        except Exception as se:
+            logger.error(f"[STRUCTURE] Failed: {se}")
+            structure = []
+
 
         # -----------------------
         # SAVE ANALYSIS
