@@ -9,8 +9,6 @@ from app.routes import health
 from app.routes import studyplan
 from app.routes import plan_pdf
 
-from app.config import ALLOWED_ORIGINS
-
 
 app = FastAPI(
     title="LearnScaffold Backend",
@@ -18,8 +16,6 @@ app = FastAPI(
     version="1.0.0",
 )
 
-
-from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,38 +25,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-
 # ---------------------------------------------------------
 # ROUTERS
 # ---------------------------------------------------------
 
-# File upload
+# Все корректно:
 app.include_router(upload.router, prefix="/upload", tags=["Upload"])
 
-# Document analysis
-app.include_router(analyze.router, prefix="", tags=["Analyze"])
+# Анализ — ПРАВИЛЬНО:
+app.include_router(analyze.router, tags=["Analyze"])
 
-# Study plan generation
+# Генерация
 app.include_router(generate.router, prefix="/generate", tags=["Generate"])
 
-
-# Video analysis (video-to-text, video plans)
+# Видео
 app.include_router(video.router, prefix="/video", tags=["Video"])
 
-# Health check
-app.include_router(health.router, prefix="", tags=["Health"])
+# Health — БЕЗ prefix! 
+# И В ФАЙЛЕ health.py ОБЯЗАТЕЛЬНО ДОЛЖНО БЫТЬ @router.get("/healthz")
+app.include_router(health.router, tags=["Health"])
 
-
-# StudyPlan older endpoints (legacy)
+# Старые эндпоинты
 app.include_router(studyplan.router, prefix="/studyplan", tags=["StudyPlan"])
 
-# PDF export
+# PDF
 app.include_router(plan_pdf.router, prefix="/plan", tags=["Plan"])
 
 
 # ---------------------------------------------------------
-# ROOT ENDPOINT
+# ROOT
 # ---------------------------------------------------------
 @app.get("/")
 def root():
