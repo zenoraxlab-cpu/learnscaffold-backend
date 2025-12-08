@@ -15,6 +15,7 @@ from app.config import UPLOAD_DIR
 
 router = APIRouter()
 
+
 # ---------------------------------------------------------
 # TASK STATUS STRUCTURE
 # ---------------------------------------------------------
@@ -47,24 +48,16 @@ def set_status(file_id: str, status: TaskStatus, details: dict = None, msg: str 
 # ---------------------------------------------------------
 # MAIN ENDPOINT — /analyze
 # ---------------------------------------------------------
-
 @router.post("/analyze")
 @router.post("/analyze/")
 async def analyze(payload=Body(...)):
-    """
-    Accepts:
-      { "file_id": "abc123" }
-    OR:
-      "abc123"
-    """
-
+    # Унификация входа
     if isinstance(payload, dict) and "file_id" in payload:
         file_id = payload["file_id"]
     else:
         file_id = str(payload)
 
     logger.info(f"[ANALYZE] Start → file {file_id}")
-
     set_status(file_id, TaskStatus.ANALYZING)
 
     try:
@@ -73,25 +66,25 @@ async def analyze(payload=Body(...)):
         if not os.path.exists(input_path):
             raise FileNotFoundError(f"File not found: {input_path}")
 
-        # -----------------------
+        # ---------------------------------------------------------
         # Extract pages metadata
-        # -----------------------
+        # ---------------------------------------------------------
         pages = extract_pdf_pages(input_path)
         page_total = len(pages)
         set_status(file_id, TaskStatus.EXTRACTING, {"pages": page_total})
 
-        # -----------------------
+        # ---------------------------------------------------------
         # Extract raw text
-        # -----------------------
+        # ---------------------------------------------------------
         full_text = await extract_pdf_text(input_path)
         logger.info(f"[TEXT] Extracted: {len(full_text)} chars")
 
         set_status(file_id, TaskStatus.CLEANING)
         cleaned = clean_text(full_text)
 
-        # -----------------------
+        # ---------------------------------------------------------
         # Detect language
-        # -----------------------
+        # ---------------------------------------------------------
         try:
             from langdetect import detect
             document_language = detect(cleaned[:5000]) if cleaned.strip() else "en"
@@ -100,21 +93,21 @@ async def analyze(payload=Body(...)):
 
         logger.info(f"[LANG] → {document_language}")
 
-        # -----------------------
+        # ---------------------------------------------------------
         # Chunking
-        # -----------------------
+        # ---------------------------------------------------------
         set_status(file_id, TaskStatus.CHUNKING)
         chunks = chunk_text(cleaned)
 
-        # -----------------------
+        # ---------------------------------------------------------
         # Classification
-        # -----------------------
+        # ---------------------------------------------------------
         set_status(file_id, TaskStatus.CLASSIFYING)
         classification = classify_document(chunks)
 
-        # -----------------------
-        # STRUCTURE EXTRACTION
-        # -----------------------
+        # ---------------------------------------------------------
+        # STRUCTURE EXTRACTION (PDF → LLM fallback)
+        # ---------------------------------------------------------
         set_status(file_id, TaskStatus.STRUCTURE)
 
         # 1) Try PDF headings
@@ -125,25 +118,24 @@ async def analyze(payload=Body(...)):
             logger.error(f"[STRUCTURE] Failed: {se}")
             structure = []
 
-        # 2) If empty → LLM fallback
+        # 2) If empty — use LLM fallback
         if not structure:
-            logger.warning("[STRUCTURE] PDF returned 0 headings → switching to LLM fallback")
-            from app.services.llm_structure import extract_structure_llm
-
+            logger.warning("[STRUCTURE] No PDF headings → switching to LLM fallback")
             try:
+                from app.services.llm_structure import extract_structure_llm
                 structure = extract_structure_llm(cleaned[:200000], document_language) or []
                 logger.warning(f"[LLM_STRUCTURE] Returned blocks: {len(structure)}")
             except Exception as le:
                 logger.error(f"[LLM_STRUCTURE] Failed: {le}")
                 structure = []
 
-        # 3) Final fail-safe
+        # 3) Final check
         if not structure:
-            logger.error("[STRUCTURE] No structure extracted (PDF + LLM failed)")
+            logger.error("[STRUCTURE] Final failure: no structure extracted")
 
-        # -----------------------
+        # ---------------------------------------------------------
         # SAVE ANALYSIS
-        # -----------------------
+        # ---------------------------------------------------------
         analysis_data = {
             "file_id": file_id,
             "document_type": classification.get("document_type", "text"),
@@ -164,6 +156,33 @@ async def analyze(payload=Body(...)):
         logger.info("[ANALYZE] Completed OK")
 
         return {"analysis": analysis_data}
+
+    # ---------------------------------------------------------
+    # ERROR HANDLER
+    # ---------------------------------------------------------
+    except Exception as e:
+        logger.error("=== ANALYZE FAILED ===")
+        logger.error(f"FILE → {file_id}")
+        logger.error(f"ERROR → {type(e).__name__}: {str(e)}")
+        logger.exception(e)
+
+        set_status(file_id, TaskStatus.ERROR, msg=str(e))
+
+        try:
+            send_telegram_alert(
+                f"❗ ANALYZE FAILED\n"
+                f"File ID: {file_id}\n"
+                f"Ошибка: {str(e)}\n"
+                f"Файл требует ручной обработки."
+            )
+        except:
+            pass
+
+        return {
+            "status": "delayed",
+            "file_id": file_id,
+            "message": "Your file requires extended processing. We will send results to your email when ready."
+        }
 
 
 # ---------------------------------------------------------
