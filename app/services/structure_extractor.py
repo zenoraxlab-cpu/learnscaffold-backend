@@ -1,88 +1,53 @@
-from app.utils.llm import run_gpt
+import fitz
 from app.utils.logger import logger
-from app.services.pdf_extractor import extract_pdf_pages
-import json
 
-# Оптимальные лимиты
-MAX_PAGES = 10
-MAX_CHARS_PER_PAGE = 1500
-MAX_TOTAL_PROMPT = 15000
-
-async def extract_structure(file_path: str):
+def extract_structure(path: str):
     """
-    Extract semantic structure from PDF with page numbers.
-    Optimized not to explode memory, but rich enough
-    for GPT to see actual document structure.
+    Extracts REAL semantic structure from PDF using PyMuPDF.
+    Returns a list of blocks:
+    {
+        "title": "...",
+        "topics": [],
+        "pages": [page_number]
+    }
     """
 
-    logger.info("[STRUCTURE] Starting structure extraction")
-
-    # 1. Load PDF pages
-    try:
-        pages = await extract_pdf_pages(file_path)
-    except Exception as e:
-        logger.error(f"[STRUCTURE] Page extraction failed: {e}")
-        return []
-
-    if not pages:
-        logger.warning("[STRUCTURE] No pages extracted")
-        return []
-
-    # 2. Take first N pages
-    sampled = pages[:MAX_PAGES]
-
-    # 3. Trim content per page
-    trimmed_pages = []
-    for i, content in enumerate(sampled):
-        if not content:
-            continue
-        trimmed = content[:MAX_CHARS_PER_PAGE]
-        trimmed_pages.append(f"=== PAGE {i+1} ===\n{trimmed}")
-
-    # 4. Build combined prompt
-    page_joined = "\n\n".join(trimmed_pages)
-
-    # global cap
-    if len(page_joined) > MAX_TOTAL_PROMPT:
-        page_joined = page_joined[:MAX_TOTAL_PROMPT]
-
-    logger.info(f"[STRUCTURE] Prompt size: {len(page_joined)} chars")
-
-    # GPT prompt
-    prompt = f"""
-Extract the semantic structure of this textbook.
-
-Return ONLY valid JSON array:
-[
-  {{
-    "title": "...",
-    "topics": ["...", "..."],
-    "pages": [1, 2]
-  }}
-]
-
-Rules:
-- MUST be valid JSON.
-- Pages MUST correspond to PAGE markers below.
-- NO explanations.
-
-Document:
-\"\"\"
-{page_joined}
-\"\"\"
-"""
+    logger.info(f"[STRUCTURE] Extracting structure from: {path}")
 
     try:
-        raw = await run_gpt(prompt, model="gpt-4o-mini")
-        logger.info(f"[STRUCTURE] Raw output (first 200 chars): {raw[:200]}")
+        doc = fitz.open(path)
+    except Exception as e:
+        logger.error(f"[STRUCTURE] Cannot open PDF: {e}")
+        return []
 
-        data = json.loads(raw)
+    structure = []
 
-        if isinstance(data, list):
-            return data
+    try:
+        for page_num, page in enumerate(doc, start=1):
+            text = page.get_text("text") or ""
+            lines = text.splitlines()
 
-        return list(data)
+            for line in lines:
+                clean = line.strip()
+
+                # Heuristic: possible section title
+                if (
+                    5 < len(clean) < 80
+                    and clean[0].isupper()
+                    and not clean.endswith(".")
+                ):
+                    structure.append({
+                        "title": clean,
+                        "topics": [],
+                        "pages": [page_num]
+                    })
 
     except Exception as e:
-        logger.error(f"[STRUCTURE] ERROR: {e}")
+        logger.error(f"[STRUCTURE] Error parsing structure: {e}")
         return []
+
+    finally:
+        doc.close()
+
+    logger.info(f"[STRUCTURE] Found headings: {len(structure)}")
+    return structure
