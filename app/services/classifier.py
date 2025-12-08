@@ -1,111 +1,149 @@
 import json
+import time
 import re
+from typing import List
 from openai import OpenAI
+
 from app.utils.logger import logger
 from app.config import OPENAI_API_KEY, OPENAI_BASE_URL
 
 
-# ---------------------------------------------------------
-# Init OpenAI client with explicit config
-# ---------------------------------------------------------
+# =========================================================
+# OpenAI client
+# =========================================================
 client = OpenAI(
     api_key=OPENAI_API_KEY,
-    base_url=OPENAI_BASE_URL
+    base_url=OPENAI_BASE_URL,
 )
 
+# Модель: сбалансированная, стабильная, без частых 429
+MODEL = "gpt-4.1-mini"
+
+
+# =========================================================
+# Helpers
+# =========================================================
 
 def cleanup_json(text: str) -> str:
-    """
-    Removes markdown fences such as ```json ... ``` purely.
-    Leaves clean JSON ready for json.loads().
-    """
+    """Remove ```json fences and return pure JSON."""
     text = re.sub(r"```json", "", text, flags=re.IGNORECASE)
     text = re.sub(r"```", "", text)
     return text.strip()
 
 
-def classify_document(chunk: str) -> dict:
+def merge_chunks(chunks: List[str], max_chars: int = 20000) -> str:
     """
-    Classify document by providing LLM with a short text chunk.
-    Must return long JSON with:
-      - document_type
-      - main_topics[]
-      - level
-      - summary
-      - recommended_days
+    Берём первые чанки текста, пока не превысили лимит,
+    чтобы не перегружать модель, но дать контекст.
+    """
+    combined = []
+    total = 0
+
+    for c in chunks:
+        if total + len(c) > max_chars:
+            break
+        combined.append(c)
+        total += len(c)
+
+    return "\n\n".join(combined)
+
+
+# =========================================================
+# MAIN CLASSIFIER
+# =========================================================
+
+def classify_document(chunks: List[str]) -> dict:
+    """
+    Stable classifier:
+      - merges multiple chunks (до ~20k символов)
+      - retries on 429
+      - guaranteed JSON output
     """
 
     logger.info("[CLASSIFIER] Starting LLM classification")
+
+    if not chunks:
+        raise ValueError("No text chunks provided")
+
+    text_sample = merge_chunks(chunks)
 
     prompt = f"""
 Analyze the following text and return STRICT JSON.
 
 TEXT:
-\"\"\"{chunk[:4000]}\"\"\"
+\"\"\"{text_sample[:20000]}\"\"\"
 
-FORMAT:
+
+REQUIRED JSON FORMAT:
 {{
   "document_type": "...",
   "main_topics": ["...", "..."],
   "level": "beginner | intermediate | advanced",
   "summary": "...",
-  "recommended_days": 0
+  "recommended_days": 1
 }}
 
-Return ONLY JSON. No markdown.
+Rules:
+- Return ONLY JSON.
+- No markdown.
+- No comments.
+- Do not hallucinate content not present in the text.
 """
 
-    # -----------------------------------------------------
-    # NEW OpenAI Responses API
-    # -----------------------------------------------------
-    try:
-        resp = client.responses.create(
-            model="gpt-4.1-mini",
-            input=[
-                {
-                    "role": "system",
-                    "content": "You are an expert education analyst. Always return strict, valid JSON."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            max_output_tokens=600,
-            temperature=0.2,
-        )
-    except Exception as e:
-        logger.error(f"[CLASSIFIER] LLM request failed: {e}")
-        raise RuntimeError("LLM request failed") from e
+    # ===============================
+    # Retry loop for stability (429)
+    # ===============================
+    attempts = 3
+    for attempt in range(1, attempts + 1):
 
-    # -----------------------------------------------------
-    # Extract text — only valid field for Responses API
-    # -----------------------------------------------------
-    try:
-        raw_output: str = resp.output_text
-    except Exception as e:
-        logger.error(f"[CLASSIFIER] Could not read resp.output_text: {e}")
-        raise ValueError("Invalid LLM response") from e
+        try:
+            resp = client.responses.create(
+                model=MODEL,
+                input=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert educational analyst. "
+                            "Always return strict, valid JSON, without markdown."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    },
+                ],
+                max_output_tokens=800,
+                temperature=0.2,
+            )
 
-    if not raw_output or not raw_output.strip():
-        logger.error("[CLASSIFIER] LLM returned empty output")
-        raise ValueError("Empty LLM output")
+            raw = resp.output_text
+            logger.info(f"[CLASSIFIER] Raw output (200 chars): {raw[:200]}")
 
-    logger.info(f"[CLASSIFIER] Raw output (200 chars): {raw_output[:200]}")
+            if not raw:
+                raise ValueError("Empty LLM output")
 
-    # Clean markdown fences
-    cleaned = cleanup_json(raw_output)
+            cleaned = cleanup_json(raw)
 
-    # -----------------------------------------------------
-    # Parse JSON strictly
-    # -----------------------------------------------------
-    try:
-        result = json.loads(cleaned)
-    except Exception as e:
-        logger.error(f"[CLASSIFIER] JSON parse error: {e}")
-        logger.error(f"[CLASSIFIER] CLEANED JSON:\n{cleaned}")
-        raise ValueError("Failed to parse JSON from LLM") from e
+            result = json.loads(cleaned)
+            logger.info("[CLASSIFIER] Classification completed")
 
-    logger.info("[CLASSIFIER] Classification completed")
+            return result
 
-    return result
+        except Exception as e:
+            logger.error(f"[CLASSIFIER] Attempt {attempt}/{attempts} failed: {e}")
+
+            # RATE LIMIT → wait & retry
+            if "rate limit" in str(e).lower() or "429" in str(e):
+                wait_sec = 5 * attempt
+                logger.error(f"[CLASSIFIER] Rate limit hit → waiting {wait_sec}s...")
+                time.sleep(wait_sec)
+                continue
+
+            if attempt == attempts:
+                raise RuntimeError("LLM classification failed after retries") from e
+
+            # short wait for other transient errors
+            time.sleep(2)
+
+    # Should never reach here
+    raise RuntimeError("Unexpected classifier error")
