@@ -49,7 +49,8 @@ app.include_router(generate.router, prefix="/generate", tags=["Generate"])
 app.include_router(video.router, prefix="/video", tags=["Video"])
 
 # Health check
-app.include_router(health.router, prefix="/health", tags=["Health"])
+app.include_router(health.router, prefix="", tags=["Health"])
+
 
 # StudyPlan older endpoints (legacy)
 app.include_router(studyplan.router, prefix="/studyplan", tags=["StudyPlan"])
