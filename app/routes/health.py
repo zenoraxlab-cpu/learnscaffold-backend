@@ -2,6 +2,6 @@ from fastapi import APIRouter
 
 router = APIRouter()
 
-@router.get("/")
+@router.get("/healthz")
 async def health():
-    return {"status": "ok", "message": "AI StudyPlan Generator backend is running"}
+    return {"status": "ok", "message": "backend is running"}
