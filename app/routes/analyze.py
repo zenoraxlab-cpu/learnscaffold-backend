@@ -58,7 +58,6 @@ async def analyze(payload=Body(...)):
       "abc123"
     """
 
-    # Унификация входа
     if isinstance(payload, dict) and "file_id" in payload:
         file_id = payload["file_id"]
     else:
@@ -82,7 +81,7 @@ async def analyze(payload=Body(...)):
         set_status(file_id, TaskStatus.EXTRACTING, {"pages": page_total})
 
         # -----------------------
-        # Extract raw text (OCR fallback inside)
+        # Extract raw text
         # -----------------------
         full_text = await extract_pdf_text(input_path)
         logger.info(f"[TEXT] Extracted: {len(full_text)} chars")
@@ -114,16 +113,34 @@ async def analyze(payload=Body(...)):
         classification = classify_document(chunks)
 
         # -----------------------
-        # Structure (headings → pages)
+        # STRUCTURE (PDF → LLM fallback)
         # -----------------------
         set_status(file_id, TaskStatus.STRUCTURE)
 
+        # Try PDF headings
         try:
             structure = extract_structure(input_path) or []
+            logger.info(f"[STRUCTURE] Extracted PDF headings: {len(structure)}")
         except Exception as se:
             logger.error(f"[STRUCTURE] Failed: {se}")
             structure = []
 
+        # Fallback → LLM
+        if not structure:
+            logger.warning("[STRUCTURE] PDF returned 0 headings → switching to LLM fallback")
+
+            from app.services.llm_structure import extract_structure_llm
+
+            try:
+                limited_text = cleaned[:200000]
+                structure = extract_structure_llm(limited_text, document_language) or []
+                logger.warning(f"[LLM_STRUCTURE] Returned blocks: {len(structure)}")
+            except Exception as le:
+                logger.error(f"[LLM_STRUCTURE] Failed: {le}")
+                structure = []
+
+        if not structure:
+            logger.error("[STRUCTURE] No structure extracted (PDF + LLM failed)")
 
         # -----------------------
         # SAVE ANALYSIS
@@ -150,9 +167,6 @@ async def analyze(payload=Body(...)):
         return {"analysis": analysis_data}
 
     except Exception as e:
-        # ---------------------------
-        # HANDLE FAILURE SAFELY
-        # ---------------------------
         logger.error("=== ANALYZE FAILED ===")
         logger.error(f"FILE → {file_id}")
         logger.error(f"ERROR → {type(e).__name__}: {str(e)}")
@@ -160,7 +174,6 @@ async def analyze(payload=Body(...)):
 
         set_status(file_id, TaskStatus.ERROR, msg=str(e))
 
-        # Telegram alert
         try:
             send_telegram_alert(
                 f"❗ ANALYZE FAILED\n"
@@ -171,7 +184,6 @@ async def analyze(payload=Body(...)):
         except Exception as te:
             logger.error(f"Telegram notifier error: {te}")
 
-        # Вместо 500 → безопасный ответ
         return {
             "status": "delayed",
             "file_id": file_id,
