@@ -32,16 +32,42 @@ def extract_structure_llm(full_text: str, language: str = "en"):
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Document language = {language}. Extract structure:\n\n{full_text[:6000]}"}
+                {
+                    "role": "user",
+                    "content": (
+                        f"Document language = {language}. Extract structure: "
+                        f"ONLY JSON. No markdown. No comments.\n\n"
+                        f"{full_text[:6000]}"
+                    ),
+                },
             ],
             temperature=0.1,
         )
 
         raw = response.choices[0].message.content.strip()
-
         logger.warning(f"[LLM_STRUCTURE RAW] {raw[:300]}")
 
-        structure = json.loads(raw)
+        # ----------------------------------------------------
+        # CLEAN MARKDOWN (```json ... ```)
+        # ----------------------------------------------------
+        cleaned = (
+            raw.replace("```json", "")
+               .replace("```", "")
+               .replace("```JSON", "")
+               .strip()
+        )
+
+        # Log cleaned JSON to debug
+        logger.warning(f"[LLM_STRUCTURE CLEANED] {cleaned[:300]}")
+
+        # Parse JSON
+        structure = json.loads(cleaned)
+
+        # Guarantee correct type
+        if not isinstance(structure, list):
+            logger.error("[LLM_STRUCTURE] Not a list → return empty list")
+            return []
+
         return structure
 
     except Exception as e:
