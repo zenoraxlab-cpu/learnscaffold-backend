@@ -1,80 +1,34 @@
 from fastapi import APIRouter, HTTPException
 
 from app.utils.logger import logger
-from app.services.llm_study import generate_study_plan, call_llm
+from app.services.llm_study import generate_study_plan
 from app.routes.analyze import load_saved_analysis
 from app.services.notifier import send_telegram_alert
 
 router = APIRouter()
 
 # ---------------------------------------------------------------------
-# 1. Page mapping: match lesson titles ↔ structure blocks (with translation)
+# 1. Равномерное распределение страниц
 # ---------------------------------------------------------------------
-async def attach_source_pages(plan_days, structure, document_language):
+def assign_page_ranges(plan_days: list[dict], total_pages: int) -> list[dict]:
     """
-    Привязывает PDF-страницы к урокам:
-    - прямые совпадения
-    - частичные совпадения
-    - fuzzy matching через пересечение токенов
-    - переводит названия уроков, если язык ≠ языка документа
+    Присваивает каждому уроку непрерывный диапазон страниц из PDF.
+    Равномерное распределение: от 1 до total_pages.
     """
+    if total_pages <= 0 or not plan_days:
+        return plan_days
 
-    indexed = []
+    total_days = len(plan_days)
+    pages_per_day = total_pages // total_days
+    remainder = total_pages % total_days
 
-    for block in structure:
-        title = (block.get("title") or "").lower().strip()
-        topics = block.get("topics") or []
-        pages = block.get("pages") or []
-
-        if not pages:
-            continue
-
-        tokens = set(title.replace(",", " ").replace(";", " ").split())
-        for t in topics:
-            tokens.update(str(t).lower().split())
-
-        indexed.append({
-            "title": title,
-            "tokens": tokens,
-            "pages": pages
-        })
-
-    for lesson in plan_days:
-        lt_orig = (lesson.get("title") or "").strip()
-
-        # Перевод на язык документа
-        if document_language != "en":
-            try:
-                prompt = f"Translate this lesson title into {document_language}:\n\n{lt_orig}"
-                lt_translated = await call_llm(prompt)
-                lt = lt_translated.strip().lower()
-            except Exception as e:
-                logger.warning(f"[TRANSLATION] Failed for title '{lt_orig}': {e}")
-                lt = lt_orig.lower()
-        else:
-            lt = lt_orig.lower()
-
-        lt_tokens = set(lt.replace(",", " ").replace(";", " ").split())
-
-        matches = []
-
-        for item in indexed:
-            st = item["title"]
-
-            if st in lt or lt in st:
-                matches.extend(item["pages"])
-                continue
-
-            if len(lt_tokens.intersection(item["tokens"])) >= 2:
-                matches.extend(item["pages"])
-                continue
-
-            for tok in lt_tokens:
-                if len(tok) >= 6 and tok in item["tokens"]:
-                    matches.extend(item["pages"])
-                    break
-
-        lesson["source_pages"] = sorted(set(matches))
+    current_page = 1
+    for i, lesson in enumerate(plan_days):
+        extra = 1 if i < remainder else 0
+        start = current_page
+        end = current_page + pages_per_day + extra - 1
+        lesson["source_pages"] = list(range(start, end + 1))
+        current_page = end + 1
 
     return plan_days
 
@@ -108,7 +62,6 @@ def normalize_plan(raw):
 @router.post("")
 @router.post("/")
 async def generate(payload: dict):
-
     print("🔥🔥🔥 BACKEND /generate CALLED 🔥🔥🔥")
     logger.warning(f"[DEBUG PAYLOAD] {payload}")
 
@@ -135,6 +88,7 @@ async def generate(payload: dict):
     summary = analysis.get("summary", "")
     structure = analysis.get("structure", [])
     document_language = analysis.get("document_language", "en")
+    pages_count = analysis.get("pages_count", 0)
 
     logger.warning(f"[DEBUG STRUCTURE] {structure}")
 
@@ -150,7 +104,7 @@ async def generate(payload: dict):
         )
 
         plan_days = normalize_plan(raw_plan)
-        plan_days = await attach_source_pages(plan_days, structure, document_language)
+        plan_days = assign_page_ranges(plan_days, total_pages=pages_count)
 
         debug_titles = [d.get("title") for d in plan_days]
         debug_pages = [d.get("source_pages") for d in plan_days]
