@@ -1,26 +1,26 @@
 from fastapi import APIRouter, HTTPException
 
 from app.utils.logger import logger
-from app.services.llm_study import generate_study_plan
+from app.services.llm_study import generate_study_plan, call_llm
 from app.routes.analyze import load_saved_analysis
 from app.services.notifier import send_telegram_alert
 
 router = APIRouter()
 
 # ---------------------------------------------------------------------
-# 1. Page mapping: match lesson titles ↔ structure blocks
+# 1. Page mapping: match lesson titles ↔ structure blocks (with translation)
 # ---------------------------------------------------------------------
-def attach_source_pages(plan_days, structure):
+async def attach_source_pages(plan_days, structure, document_language):
     """
     Привязывает PDF-страницы к урокам:
     - прямые совпадения
     - частичные совпадения
     - fuzzy matching через пересечение токенов
+    - переводит названия уроков, если язык ≠ языка документа
     """
 
     indexed = []
 
-    # Подготовка структуры
     for block in structure:
         title = (block.get("title") or "").lower().strip()
         topics = block.get("topics") or []
@@ -29,7 +29,6 @@ def attach_source_pages(plan_days, structure):
         if not pages:
             continue
 
-        # токенизация
         tokens = set(title.replace(",", " ").replace(";", " ").split())
         for t in topics:
             tokens.update(str(t).lower().split())
@@ -40,9 +39,21 @@ def attach_source_pages(plan_days, structure):
             "pages": pages
         })
 
-    # Привязка страниц
     for lesson in plan_days:
-        lt = (lesson.get("title") or "").lower().strip()
+        lt_orig = (lesson.get("title") or "").strip()
+
+        # Перевод на язык документа
+        if document_language != "en":
+            try:
+                prompt = f"Translate this lesson title into {document_language}:\n\n{lt_orig}"
+                lt_translated = await call_llm(prompt)
+                lt = lt_translated.strip().lower()
+            except Exception as e:
+                logger.warning(f"[TRANSLATION] Failed for title '{lt_orig}': {e}")
+                lt = lt_orig.lower()
+        else:
+            lt = lt_orig.lower()
+
         lt_tokens = set(lt.replace(",", " ").replace(";", " ").split())
 
         matches = []
@@ -50,17 +61,14 @@ def attach_source_pages(plan_days, structure):
         for item in indexed:
             st = item["title"]
 
-            # 1) Прямое входящее совпадение
             if st in lt or lt in st:
                 matches.extend(item["pages"])
                 continue
 
-            # 2) ≥2 общих токена → хорошее совпадение
             if len(lt_tokens.intersection(item["tokens"])) >= 2:
                 matches.extend(item["pages"])
                 continue
 
-            # 3) Один общий редкий токен, но длиной ≥ 6 символов (например: deduction, syllogism)
             for tok in lt_tokens:
                 if len(tok) >= 6 and tok in item["tokens"]:
                     matches.extend(item["pages"])
@@ -78,7 +86,6 @@ def normalize_plan(raw):
     """
     Приводим любой формат LLM → list[dict].
     """
-
     if isinstance(raw, dict):
         if isinstance(raw.get("plan"), dict):
             days = raw["plan"].get("days")
@@ -143,7 +150,7 @@ async def generate(payload: dict):
         )
 
         plan_days = normalize_plan(raw_plan)
-        plan_days = attach_source_pages(plan_days, structure)
+        plan_days = await attach_source_pages(plan_days, structure, document_language)
 
         debug_titles = [d.get("title") for d in plan_days]
         debug_pages = [d.get("source_pages") for d in plan_days]
