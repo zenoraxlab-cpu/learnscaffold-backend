@@ -9,8 +9,10 @@ from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
 from app.services.text_cleaner import clean_text
 from app.services.chunker import chunk_text
 from app.services.classifier import classify_document
-from app.services.structure_extractor import extract_structure
 from app.services.notifier import send_telegram_alert
+from app.services.structure_extractor import extract_structure_from_text
+from app.services.pdf_text import extract_clean_text
+from app.services.pdf_extractor import extract_structure
 from app.config import UPLOAD_DIR
 
 router = APIRouter()
@@ -106,11 +108,11 @@ async def analyze(payload=Body(...)):
         classification = classify_document(chunks)
 
         # ---------------------------------------------------------
-        # STRUCTURE EXTRACTION (PDF → LLM fallback)
+        # STRUCTURE EXTRACTION (PDF → regex fallback → LLM fallback)
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.STRUCTURE)
 
-        # 1) Try PDF headings
+        # 1. Пытаемся извлечь структуру из PDF (визуально)
         try:
             structure = extract_structure(input_path) or []
             logger.info(f"[STRUCTURE] Extracted PDF headings: {len(structure)}")
@@ -118,9 +120,19 @@ async def analyze(payload=Body(...)):
             logger.error(f"[STRUCTURE] Failed: {se}")
             structure = []
 
-        # 2) If empty — use LLM fallback
+        # 2. Если заголовков слишком мало — пробуем извлечь структуру из текста (regex)
+        if len(structure) < 2:
+            logger.warning("[STRUCTURE] Fallback: regex-based extraction from cleaned text...")
+            try:
+                text_by_page = extract_clean_text(input_path)
+                structure = extract_structure_from_text(text_by_page)
+                logger.info(f"[FALLBACK STRUCTURE] Extracted chapters: {len(structure)}")
+            except Exception as re_fallback_err:
+                logger.error(f"[FALLBACK STRUCTURE] Failed: {re_fallback_err}")
+
+        # 3. Если всё ещё пусто — fallback на LLM
         if not structure:
-            logger.warning("[STRUCTURE] No PDF headings → switching to LLM fallback")
+            logger.warning("[STRUCTURE] No PDF or regex headings → switching to LLM fallback")
             try:
                 from app.services.llm_structure import extract_structure_llm
                 structure = extract_structure_llm(cleaned[:200000], document_language) or []
@@ -129,7 +141,7 @@ async def analyze(payload=Body(...)):
                 logger.error(f"[LLM_STRUCTURE] Failed: {le}")
                 structure = []
 
-        # 3) Final check
+        # 4. Финальная проверка
         if not structure:
             logger.error("[STRUCTURE] Final failure: no structure extracted")
 
