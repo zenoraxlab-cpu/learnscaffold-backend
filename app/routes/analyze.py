@@ -12,7 +12,7 @@ from app.services.classifier import classify_document
 from app.services.notifier import send_telegram_alert
 from app.services.structure_extractor import extract_structure_from_text
 from app.services.pdf_text import extract_clean_text
-from app.services.pdf_extractor import extract_structure
+from app.services.structure_extractor import extract_structure
 from app.config import UPLOAD_DIR
 
 router = APIRouter()
