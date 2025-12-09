@@ -8,30 +8,25 @@ from app.services.notifier import send_telegram_alert
 router = APIRouter()
 
 # ---------------------------------------------------------------------
-# 1. Равномерное распределение страниц
+# 1. Делим структуру по линейным диапазонам
 # ---------------------------------------------------------------------
-def assign_page_ranges(plan_days: list[dict], total_pages: int) -> list[dict]:
+def split_structure_into_ranges(structure, total_pages, days):
     """
-    Присваивает каждому уроку непрерывный диапазон страниц из PDF.
-    Равномерное распределение: от 1 до total_pages.
+    Делит общее количество страниц по дням равномерно.
+    Возвращает список: [(1, 80), (81, 160), ...]
     """
-    if total_pages <= 0 or not plan_days:
-        return plan_days
 
-    total_days = len(plan_days)
-    pages_per_day = total_pages // total_days
-    remainder = total_pages % total_days
+    pages_per_day = max(total_pages // days, 1)
+    ranges = []
 
-    current_page = 1
-    for i, lesson in enumerate(plan_days):
-        extra = 1 if i < remainder else 0
-        start = current_page
-        end = current_page + pages_per_day + extra - 1
-        lesson["source_pages"] = list(range(start, end + 1))
-        current_page = end + 1
+    for i in range(days):
+        start = i * pages_per_day + 1
+        end = (i + 1) * pages_per_day
+        if i == days - 1:
+            end = total_pages
+        ranges.append(range(start, end + 1))
 
-    return plan_days
-
+    return ranges
 
 # ---------------------------------------------------------------------
 # 2. Нормализация плана
@@ -45,7 +40,6 @@ def normalize_plan(raw):
             days = raw["plan"].get("days")
             if isinstance(days, list):
                 return days
-
         if isinstance(raw.get("plan"), list):
             return raw["plan"]
 
@@ -55,13 +49,13 @@ def normalize_plan(raw):
     logger.error(f"[ERROR] Unexpected plan format: {raw}")
     raise HTTPException(status_code=500, detail="Invalid plan format returned by LLM")
 
-
 # ---------------------------------------------------------------------
 # 3. Основной endpoint /generate
 # ---------------------------------------------------------------------
 @router.post("")
 @router.post("/")
 async def generate(payload: dict):
+
     print("🔥🔥🔥 BACKEND /generate CALLED 🔥🔥🔥")
     logger.warning(f"[DEBUG PAYLOAD] {payload}")
 
@@ -88,11 +82,9 @@ async def generate(payload: dict):
     summary = analysis.get("summary", "")
     structure = analysis.get("structure", [])
     document_language = analysis.get("document_language", "en")
-    pages_count = analysis.get("pages_count", 0)
 
     logger.warning(f"[DEBUG STRUCTURE] {structure}")
 
-    # ----------------- ОСНОВНОЙ TRY -----------------
     try:
         raw_plan = await generate_study_plan(
             file_id=file_id,
@@ -104,7 +96,14 @@ async def generate(payload: dict):
         )
 
         plan_days = normalize_plan(raw_plan)
-        plan_days = assign_page_ranges(plan_days, total_pages=pages_count)
+
+        # Линейная разметка страниц
+        all_pages = [p for block in structure for p in block.get("pages", [])]
+        total_pages = max(all_pages) if all_pages else 1
+        page_ranges = split_structure_into_ranges(structure, total_pages, days)
+
+        for i, lesson in enumerate(plan_days):
+            lesson["source_pages"] = list(page_ranges[i])
 
         debug_titles = [d.get("title") for d in plan_days]
         debug_pages = [d.get("source_pages") for d in plan_days]
@@ -123,7 +122,6 @@ async def generate(payload: dict):
             "debug_pages_attached": debug_pages,
         }
 
-    # ----------------- ФОЛБЭК ДЛЯ LLM -----------------
     except Exception as e:
         logger.error("=== GENERATE FAILED ===")
         logger.exception(e)
