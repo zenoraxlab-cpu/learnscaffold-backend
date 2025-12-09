@@ -19,6 +19,11 @@ async def generate_study_plan(
     logger.warning(f"[DEBUG LLM] Target language = '{language}', document_language = '{document_language}'")
     logger.info(f"[LLM_STUDY] Generating study plan for {days} days in '{language}'...")
 
+    # Limit structure length to avoid token overflow
+    if len(structure) > 200:
+        logger.warning(f"[LLM_STUDY] Truncating structure from {len(structure)} to 200 items")
+        structure = structure[:200]
+
     system_prompt = f"""
 You are an AI assistant that generates structured study plans.
 
@@ -78,7 +83,7 @@ Generate a {days}-day structured study program.
         response = await client.chat.completions.create(
             model="gpt-4.1",
             temperature=0.2,
-            max_tokens=6000,
+            max_tokens=4000,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
