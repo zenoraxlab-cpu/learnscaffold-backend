@@ -48,3 +48,7 @@ websockets==15.0.1
 Werkzeug==3.1.4
 yt-dlp
 langdetect==1.0.9
+
+# === ДОБАВЛЕННЫЕ ДЛЯ НОВОГО FLOW ===
+celery[redis]==5.4.0
+redis==5.2.1
