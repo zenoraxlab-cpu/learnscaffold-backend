@@ -1,3 +1,5 @@
+# app/routes/analyze.py
+
 from fastapi import APIRouter, HTTPException, Body
 from enum import Enum
 import os
@@ -40,7 +42,7 @@ def set_status(file_id: str, status: TaskStatus, details: dict = None, msg: str 
     task_status[file_id] = {
         "file_id": file_id,
         "status": status.value,
-        "details": details,
+        "details": details or {},
         "message": msg,
     }
     logger.info(f"[STATUS] {file_id} → {status.value}")
@@ -63,7 +65,6 @@ async def analyze(payload=Body(...)):
 
     try:
         input_path = os.path.join(UPLOAD_DIR, f"{file_id}.pdf")
-
         if not os.path.exists(input_path):
             raise FileNotFoundError(f"File not found: {input_path}")
 
@@ -82,6 +83,7 @@ async def analyze(payload=Body(...)):
 
         set_status(file_id, TaskStatus.CLEANING)
         cleaned = clean_text(full_text)
+        logger.info(f"[TEXT] Cleaning finished, length={len(cleaned)}")
 
         # ---------------------------------------------------------
         # Detect language
@@ -89,59 +91,60 @@ async def analyze(payload=Body(...)):
         try:
             from langdetect import detect
             document_language = detect(cleaned[:5000]) if cleaned.strip() else "en"
-        except:
+        except Exception as e:
+            logger.warning(f"Langdetect failed: {e}")
             document_language = "en"
 
         logger.info(f"[LANG] → {document_language}")
 
         # ---------------------------------------------------------
-        # Chunking
-        # ---------------------------------------------------------
-        set_status(file_id, TaskStatus.CHUNKING)
-       
-        # ---------------------------------------------------------
-        # Classification
+        # Classification (используем весь cleaned текст)
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.CLASSIFYING)
-        classification = classify_document(chunks)
+        try:
+            classification = classify_document(cleaned)  # передаём текст напрямую
+        except Exception as ce:
+            logger.error(f"[CLASSIFY] Failed: {ce}")
+            classification = {
+                "document_type": "text",
+                "main_topics": [],
+                "summary": "Классификация не удалась.",
+                "recommended_days": 7
+            }
 
         # ---------------------------------------------------------
-        # STRUCTURE EXTRACTION (PDF → regex fallback → LLM fallback)
+        # STRUCTURE EXTRACTION
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.STRUCTURE)
+        structure = []
 
-        # 1. Пытаемся извлечь структуру из PDF (визуально)
+        # 1. Извлечение из PDF (визуальные заголовки)
         try:
             structure = extract_structure(input_path) or []
-            logger.info(f"[STRUCTURE] Extracted PDF headings: {len(structure)}")
+            if structure:
+                logger.info(f"[STRUCTURE] PDF headings: {len(structure)}")
         except Exception as se:
-            logger.error(f"[STRUCTURE] Failed: {se}")
-            structure = []
+            logger.warning(f"[STRUCTURE] PDF extraction failed: {se}")
 
-        # 2. Если заголовков слишком мало — пробуем извлечь структуру из текста (regex)
-        if len(structure) < 2:
-            logger.warning("[STRUCTURE] Fallback: regex-based extraction from cleaned text...")
+        # 2. Fallback: regex из текста по страницам
+        if len(structure) < 3:
+            logger.info("[STRUCTURE] Fallback → regex from text")
             try:
                 text_by_page = extract_clean_text(input_path)
                 structure = extract_structure_from_text(text_by_page)
-                logger.info(f"[FALLBACK STRUCTURE] Extracted chapters: {len(structure)}")
-            except Exception as re_fallback_err:
-                logger.error(f"[FALLBACK STRUCTURE] Failed: {re_fallback_err}")
+                logger.info(f"[FALLBACK STRUCTURE] Regex extracted: {len(structure)}")
+            except Exception as re:
+                logger.warning(f"[FALLBACK STRUCTURE] Regex failed: {re}")
 
-        # 3. Если всё ещё пусто — fallback на LLM
+        # 3. Fallback: LLM (если всё ещё пусто)
         if not structure:
-            logger.warning("[STRUCTURE] No PDF or regex headings → switching to LLM fallback")
+            logger.info("[STRUCTURE] Final fallback → LLM")
             try:
                 from app.services.llm_structure import extract_structure_llm
                 structure = extract_structure_llm(cleaned[:200000], document_language) or []
-                logger.warning(f"[LLM_STRUCTURE] Returned blocks: {len(structure)}")
+                logger.info(f"[LLM_STRUCTURE] LLM returned: {len(structure)} blocks")
             except Exception as le:
                 logger.error(f"[LLM_STRUCTURE] Failed: {le}")
-                structure = []
-
-        # 4. Финальная проверка
-        if not structure:
-            logger.error("[STRUCTURE] Final failure: no structure extracted")
 
         # ---------------------------------------------------------
         # SAVE ANALYSIS
@@ -163,13 +166,10 @@ async def analyze(payload=Body(...)):
             json.dump(analysis_data, f, ensure_ascii=False, indent=2)
 
         set_status(file_id, TaskStatus.READY)
-        logger.info("[ANALYZE] Completed OK")
+        logger.info("[ANALYZE] Completed successfully")
 
         return {"analysis": analysis_data}
 
-    # ---------------------------------------------------------
-    # ERROR HANDLER
-    # ---------------------------------------------------------
     except Exception as e:
         logger.error("=== ANALYZE FAILED ===")
         logger.error(f"FILE → {file_id}")
@@ -180,10 +180,10 @@ async def analyze(payload=Body(...)):
 
         try:
             send_telegram_alert(
-                f"❗ ANALYZE FAILED\n"
+                f"ANALYZE FAILED\n"
                 f"File ID: {file_id}\n"
                 f"Ошибка: {str(e)}\n"
-                f"Файл требует ручной обработки."
+                f"Требует ручной обработки."
             )
         except:
             pass
@@ -209,9 +209,7 @@ def get_status(file_id: str):
 # ---------------------------------------------------------
 def load_saved_analysis(file_id: str) -> dict:
     path = os.path.join(UPLOAD_DIR, f"{file_id}_analysis.json")
-
     if not os.path.exists(path):
         raise FileNotFoundError(f"Analysis not found: {path}")
-
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
