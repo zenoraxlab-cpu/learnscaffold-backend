@@ -1,146 +1,74 @@
+import os
 from fastapi import APIRouter, HTTPException
-
 from app.utils.logger import logger
-from app.services.llm_study import generate_study_plan
-from app.routes.analyze import load_saved_analysis
-from app.services.notifier import send_telegram_alert
+from app.services.pdf_extractor import extract_pdf_pages
+from app.services.page_chunker import chunk_pages
+from app.services.llm_study import generate_units_from_chunk
 
 router = APIRouter()
 
-# ---------------------------------------------------------------------
-# 1. Делим структуру по линейным диапазонам
-# ---------------------------------------------------------------------
-def split_structure_into_ranges(structure, total_pages, days):
-    """
-    Делит общее количество страниц по дням равномерно.
-    Возвращает список: [(1, 80), (81, 160), ...]
-    """
-
-    pages_per_day = max(total_pages // days, 1)
-    ranges = []
-
-    for i in range(days):
-        start = i * pages_per_day + 1
-        end = (i + 1) * pages_per_day
-        if i == days - 1:
-            end = total_pages
-        ranges.append(range(start, end + 1))
-
-    return ranges
-
-# ---------------------------------------------------------------------
-# 2. Нормализация плана
-# ---------------------------------------------------------------------
-def normalize_plan(raw):
-    """
-    Приводим любой формат LLM → list[dict].
-    """
-    if isinstance(raw, dict):
-        if isinstance(raw.get("plan"), dict):
-            days = raw["plan"].get("days")
-            if isinstance(days, list):
-                return days
-        if isinstance(raw.get("plan"), list):
-            return raw["plan"]
-
-    if isinstance(raw, list):
-        return raw
-
-    logger.error(f"[ERROR] Unexpected plan format: {raw}")
-    raise HTTPException(status_code=500, detail="Invalid plan format returned by LLM")
-
-# ---------------------------------------------------------------------
-# 3. Основной endpoint /generate
-# ---------------------------------------------------------------------
-@router.post("")
-@router.post("/")
+@router.post("/generate")
 async def generate(payload: dict):
-
-    print("🔥🔥🔥 BACKEND /generate CALLED 🔥🔥🔥")
-    logger.warning(f"[DEBUG PAYLOAD] {payload}")
+    logger.info("[GENERATE] Запуск новой генерации плана")
 
     file_id = payload.get("file_id")
-    days = payload.get("days")
-    language = payload.get("language")
+    days = int(payload.get("days", 10))
+    language = payload.get("language", "ru")
 
-    if not file_id or days is None or not language:
-        raise HTTPException(status_code=422, detail="Missing required parameters")
+    if not file_id:
+        raise HTTPException(status_code=422, detail="file_id required")
 
-    try:
-        days = int(days)
-    except:
-        raise HTTPException(status_code=422, detail="Invalid 'days' value")
+    file_path = f"./data/{file_id}.pdf" # ← если у тебя другая папка — измени
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="PDF not found")
 
-    logger.info(f"[GENERATE] Start: file_id={file_id} days={days} lang={language}")
+    # 1. Извлекаем текст постранично
+    pages = extract_pdf_pages(file_path)
+    pages = [p for p in pages if p["text"].strip()]
 
-    # Загружаем анализ
-    try:
-        analysis = load_saved_analysis(file_id)
-    except Exception:
-        raise HTTPException(status_code=404, detail="No saved analysis for this file")
+    if not pages:
+        raise HTTPException(status_code=500, detail="No text extracted from PDF")
 
-    summary = analysis.get("summary", "")
-    structure = analysis.get("structure", [])
-    document_language = analysis.get("document_language", "en")
+    # 2. Чанкаем
+    chunks = chunk_pages(pages)
+    logger.info(f"[GENERATE] Создано {len(chunks)} чанков")
 
-    logger.warning(f"[DEBUG STRUCTURE] {structure}")
-
-    try:
-        raw_plan = await generate_study_plan(
-            file_id=file_id,
-            days=days,
-            language=language,
-            summary=summary,
-            structure=structure,
-            document_language=document_language,
+    # 3. Генерируем единицы по каждому чанку
+    all_units = []
+    for chunk in chunks:
+        logger.info(f"[GENERATE] Генерация для страниц {chunk['page_start']}–{chunk['page_end']}")
+        result = await generate_units_from_chunk(
+            text=chunk["text"],
+            page_start=chunk["page_start"],
+            page_end=chunk["page_end"],
+            language=language
         )
+        for unit in result.get("units", []):
+            unit["source_pages"] = list(range(chunk["page_start"], chunk["page_end"] + 1))
+        all_units.extend(result.get("units", []))
 
-        plan_days = normalize_plan(raw_plan)
+    if not all_units:
+        raise HTTPException(status_code=500, detail="Failed to generate units")
 
-        # Линейная разметка страниц
-        all_pages = [p for block in structure for p in block.get("pages", [])]
-        total_pages = max(all_pages) if all_pages else 1
-        page_ranges = split_structure_into_ranges(structure, total_pages, days)
+    # 4. Группируем по дням
+    units_per_day = max(1, len(all_units) // days)
+    plan = []
+    for d in range(1, days + 1):
+        start = (d - 1) * units_per_day
+        end = d * units_per_day if d < days else len(all_units)
+        day_units = all_units[start:end]
+        covered_pages = sorted(set(p for u in day_units for p in u["source_pages"]))
+        page_range = f"{covered_pages[0]}-{covered_pages[-1]}" if covered_pages else ""
+        plan.append({
+            "day_number": d,
+            "title": f"День {d}" if language == "ru" else f"Day {d}",
+            "page_range": page_range,
+            "units": day_units
+        })
 
-        for i, lesson in enumerate(plan_days):
-            lesson["source_pages"] = list(page_ranges[i])
-
-        debug_titles = [d.get("title") for d in plan_days]
-        debug_pages = [d.get("source_pages") for d in plan_days]
-
-        logger.warning(f"[DEBUG TITLES] {debug_titles}")
-        logger.warning(f"[DEBUG PAGES] {debug_pages}")
-
-        return {
-            "status": "ok",
-            "file_id": file_id,
-            "days": days,
-            "analysis": analysis,
-            "plan": {"days": plan_days},
-            "debug_structure": structure,
-            "debug_titles": debug_titles,
-            "debug_pages_attached": debug_pages,
-        }
-
-    except Exception as e:
-        logger.error("=== GENERATE FAILED ===")
-        logger.exception(e)
-
-        try:
-            send_telegram_alert(
-                f"❗ GENERATE FAILED\n"
-                f"File ID: {file_id}\n"
-                f"Ошибка: {str(e)}\n"
-                f"Нужна ручная генерация плана."
-            )
-        except Exception as te:
-            logger.error(f"Telegram notifier error: {te}")
-
-        return {
-            "status": "delayed",
-            "file_id": file_id,
-            "message": (
-                "Your study plan requires extended processing. "
-                "We will send it to your email when it is ready."
-            ),
-        }
+    return {
+        "status": "ok",
+        "total_units": len(all_units),
+        "total_chunks": len(chunks),
+        "plan": plan
+    }

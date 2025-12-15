@@ -6,7 +6,6 @@ from app.utils.logger import logger
 from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
 from app.services.structure_extractor import extract_structure
 from app.services.text_cleaner import clean_text
-from app.services.chunker import chunk_text
 from app.services.classifier import classify_document
 from app.services.llm_study import generate_study_plan as llm_generate_study_plan
 from app.services.llm_flashcards import generate_flashcards_for_lesson
@@ -55,10 +54,7 @@ async def generate_study(
     cleaned = clean_text(raw_text)
 
     # Chunking
-    chunks = chunk_text(cleaned, max_chars=2500, overlap=200)
-    if not chunks:
-        raise HTTPException(status_code=500, detail="Chunking failed")
-
+ 
     # Classification
     classification = classify_document(chunks[0])
     summary = classification.get("summary", "")

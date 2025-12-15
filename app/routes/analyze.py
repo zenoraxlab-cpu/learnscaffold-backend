@@ -7,7 +7,6 @@ from typing import Dict
 from app.utils.logger import logger
 from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
 from app.services.text_cleaner import clean_text
-from app.services.chunker import chunk_text
 from app.services.classifier import classify_document
 from app.services.notifier import send_telegram_alert
 from app.services.structure_extractor import extract_structure_from_text
@@ -99,8 +98,7 @@ async def analyze(payload=Body(...)):
         # Chunking
         # ---------------------------------------------------------
         set_status(file_id, TaskStatus.CHUNKING)
-        chunks = chunk_text(cleaned)
-
+       
         # ---------------------------------------------------------
         # Classification
         # ---------------------------------------------------------
