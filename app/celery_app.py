@@ -1,12 +1,11 @@
-# app/celery_app.py
-
 import sys
-import os
-from celery import Celery
 
 # 🛠 Хак для Render/Docker: фиксим sys.stdout.isatty() ошибки
 if not hasattr(sys.stdout, "isatty"):
     sys.stdout.isatty = lambda: False
+
+import os
+from celery import Celery
 
 # Redis брокер и бэкенд
 broker_url = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
