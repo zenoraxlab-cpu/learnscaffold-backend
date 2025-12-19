@@ -2,6 +2,10 @@
 
 import sys
 
+# 🛠 Хак для Render/Docker: фиксим sys.stdout.isatty() ошибки
+if not hasattr(sys.stdout, "isatty"):
+    sys.stdout.isatty = lambda: False
+
 # 🔧 FIX: Render stdout bug (StdoutFlusher has no isatty)
 # Celery/Click вызывает sys.stdout.isatty(), а в Render его нет
 if not hasattr(sys.stdout, "isatty"):
