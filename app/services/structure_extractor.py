@@ -4,11 +4,11 @@ from app.utils.logger import logger
 
 
 # =========================================================
-# 1. Extract structure from PDF visually (your original)
+# 1. Extract structure from PDF visually (PyMuPDF)
 # =========================================================
 def extract_structure(path: str):
     """
-    Extracts REAL semantic structure from PDF using PyMuPDF.
+    Extracts semantic structure from PDF using PyMuPDF.
     Returns a list of blocks:
     {
         "title": "...",
@@ -35,7 +35,6 @@ def extract_structure(path: str):
             for line in lines:
                 clean = line.strip()
 
-                # Heuristic: possible section title
                 if (
                     5 < len(clean) < 80
                     and clean[0].isupper()
@@ -58,71 +57,64 @@ def extract_structure(path: str):
     return structure
 
 
-
 # =========================================================
-# 2. Extract structure from plain text (regex-based fallback)
+# 2. Extract structure from plain text (OCR / text fallback)
 # =========================================================
 def extract_structure_from_text(text_by_page: list) -> list:
     """
-    Fallback structure extractor for plain text (after OCR or simple PDFs).
-    Expects text_by_page = [{ "page": int, "text": str }, ...]
+    Extract structure from text.
+    Expects:
+      text_by_page = [{ "page": int, "text": str }, ...]
+    GUARANTEES non-empty result.
     """
 
-    logger.warning("[STRUCTURE_FALLBACK] Running regex-based structure extractor")
+    logger.warning("[STRUCTURE] Running text-based structure extractor")
 
     structure = []
     seen_titles = set()
 
-    # Pattern 1 — Глава / Chapter / Section
     chapter_regex = re.compile(
         r"(?i)\b(глава|chapter|section)\s+\d{1,3}[:\.\-]?\s+([A-Za-zА-Яа-яЁё0-9 ,\-]{3,100})"
     )
 
-    # Pattern 2 — numbered headings "1.2 Title", "2 Introduction"
     numbered_regex = re.compile(
-        r"^\s*\d{1,3}(\.\d{1,3})*\s+[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё0-9 ,\-]{3,100}$",
-        re.MULTILINE
+        r"^\s*\d{1,3}(\.\d{1,3})*\s+[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё0-9 ,\-]{3,100}$"
     )
 
-    # Pattern 3 — isolated capitalized headings
     simple_header_regex = re.compile(
-        r"^[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё0-9 ,\-]{5,80}$",
-        re.MULTILINE
+        r"^[A-ZА-ЯЁ][A-Za-zА-Яа-яЁё0-9 ,\-]{5,80}$"
     )
 
     for item in text_by_page:
-        page = item["page"]
-        text = item["text"]
+        page = item.get("page", 1)
+        text = item.get("text") or ""
 
         if not text or len(text) < 20:
             continue
 
-        # --- Pattern 1: Chapter-like headings ---
+        # Pattern 1 — Chapter-like
         for match in chapter_regex.findall(text):
-            raw_title = match[1].strip()
-            if raw_title and raw_title not in seen_titles:
+            title = match[1].strip()
+            if title and title not in seen_titles:
                 structure.append({
-                    "title": raw_title,
+                    "title": title,
                     "topics": [],
                     "pages": [page]
                 })
-                seen_titles.add(raw_title)
+                seen_titles.add(title)
 
-        # --- Pattern 2: Numbered headings ---
-        for match in numbered_regex.findall(text):
-            # match returns only subgroups — extract full match differently
-            for line in text.splitlines():
-                if numbered_regex.match(line.strip()):
-                    title = line.strip()
-                    if title not in seen_titles:
-                        structure.append({
-                            "title": title,
-                            "topics": [],
-                            "pages": [page]
-                        })
-                        seen_titles.add(title)
+        # Pattern 2 — Numbered headings
+        for line in text.splitlines():
+            clean = line.strip()
+            if numbered_regex.match(clean) and clean not in seen_titles:
+                structure.append({
+                    "title": clean,
+                    "topics": [],
+                    "pages": [page]
+                })
+                seen_titles.add(clean)
 
-        # --- Pattern 3: Simple isolated headings ---
+        # Pattern 3 — Simple headers
         for line in text.splitlines():
             clean = line.strip()
             if 5 < len(clean) < 80 and simple_header_regex.match(clean):
@@ -134,5 +126,23 @@ def extract_structure_from_text(text_by_page: list) -> list:
                     })
                     seen_titles.add(clean)
 
-    logger.warning(f"[STRUCTURE_FALLBACK] Extracted text-based chapters: {len(structure)}")
+    # =====================================================
+    # HARD FALLBACK — NEVER RETURN EMPTY STRUCTURE
+    # =====================================================
+    if not structure:
+        logger.error("[STRUCTURE] Empty result → fallback by pages")
+
+        for item in text_by_page:
+            page = item.get("page", 1)
+            text = (item.get("text") or "").strip()
+            if not text:
+                continue
+
+            structure.append({
+                "title": f"Page {page}",
+                "topics": [],
+                "pages": [page]
+            })
+
+    logger.info(f"[STRUCTURE] Final structure size: {len(structure)}")
     return structure
