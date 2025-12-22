@@ -8,13 +8,11 @@ from app.config import UPLOAD_DIR
 
 router = APIRouter()
 
-
-@router.post("/generate")
+@router.post("")  # ← ВАЖНО: пустой путь, т.к. prefix="/generate"
 async def generate(payload: dict):
     logger.info("[GENERATE] Start plan generation")
 
-    # === INPUT ===
-    file_id = payload.get("file_id")  # ЭТО task_id из /analyze/init
+    file_id = payload.get("file_id")  # это task_id из /analyze/init
     days = int(payload.get("days", 10))
     language = payload.get("language", "ru")
 
@@ -25,18 +23,18 @@ async def generate(payload: dict):
     if not os.path.exists(pdf_path):
         raise HTTPException(status_code=404, detail="PDF not found")
 
-    # === 1. EXTRACT PAGES ===
+    # 1. Извлекаем текст постранично
     pages = extract_pdf_pages(pdf_path)
     pages = [p for p in pages if p.get("text", "").strip()]
 
     if not pages:
         raise HTTPException(status_code=500, detail="No text extracted from PDF")
 
-    # === 2. CHUNK ===
+    # 2. Чанкаем
     chunks = chunk_pages(pages)
     logger.info(f"[GENERATE] Chunks created: {len(chunks)}")
 
-    # === 3. LLM UNITS ===
+    # 3. Генерируем учебные юниты
     all_units = []
 
     for chunk in chunks:
@@ -61,7 +59,7 @@ async def generate(payload: dict):
     if not all_units:
         raise HTTPException(status_code=500, detail="Failed to generate units")
 
-    # === 4. SPLIT BY DAYS ===
+    # 4. Группируем по дням
     units_per_day = max(1, len(all_units) // days)
     plan = []
 
