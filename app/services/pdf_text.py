@@ -1,42 +1,29 @@
-import fitz
 from app.utils.logger import logger
-from app.services.pdf_extractor import extract_pdf_text
+from app.services.pdf_extractor import extract_pdf_pages
+from app.services.pdf_extractor import extract_pdf_text_sync
 
 
-def extract_clean_text(path: str) -> list:
+def extract_clean_text(pdf_path: str) -> list:
     """
-    Возвращает текст по страницам:
-    [
-        { "page": 1, "text": "..." },
-        ...
-    ]
+    SYNC function.
+    Returns:
+      [{ "page": int, "text": str }, ...]
     """
-    logger.info(f"[PDF_TEXT] extract_clean_text: {path}")
+
+    logger.info(f"[PDF_TEXT] extract_clean_text: {pdf_path}")
 
     try:
-        # ⛔ БЕЗ asyncio
-        text = extract_pdf_text(path)
+        # 1. extract pages metadata (sync)
+        pages = extract_pdf_pages(pdf_path)
 
-        if not text:
-            logger.warning("[PDF_TEXT] Empty text after extraction.")
-            return []
+        # 2. extract text (SYNC VERSION ONLY)
+        text_by_page = extract_pdf_text_sync(pdf_path)
 
-        doc = fitz.open(path)
-        page_count = len(doc)
-        doc.close()
+        if not isinstance(text_by_page, list):
+            raise ValueError("extract_pdf_text_sync returned invalid data")
 
-        chunk_size = max(1, len(text) // page_count)
-        result = []
-
-        for i in range(page_count):
-            start = i * chunk_size
-            end = (i + 1) * chunk_size
-            result.append({
-                "page": i + 1,
-                "text": text[start:end].strip()
-            })
-
-        return result
+        logger.info(f"[PDF_TEXT] Text cleaning finished, pages={len(text_by_page)}")
+        return text_by_page
 
     except Exception as e:
         logger.error(f"[PDF_TEXT] Failed: {e}")
