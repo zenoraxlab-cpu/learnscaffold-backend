@@ -2,12 +2,14 @@ print(">>> RUN_WORKER_BOOTSTRAP <<<", flush=True)
 
 import sys
 
-# === Render StdoutFlusher fix ===
-if not hasattr(sys.stdout, "isatty"):
-    sys.stdout.isatty = lambda: False
+def ensure_isatty(stream):
+    cls = stream.__class__
+    if not hasattr(cls, "isatty"):
+        cls.isatty = lambda self: False
 
-if not hasattr(sys.stderr, "isatty"):
-    sys.stderr.isatty = lambda: False
+# === Render StdoutFlusher fix (CORRECT) ===
+ensure_isatty(sys.stdout)
+ensure_isatty(sys.stderr)
 
 from app.celery_app import celery_app
 
