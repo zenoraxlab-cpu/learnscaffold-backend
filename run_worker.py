@@ -1,15 +1,27 @@
 print(">>> RUN_WORKER_BOOTSTRAP <<<", flush=True)
 
 import sys
+import io
 
-def ensure_isatty(stream):
-    cls = stream.__class__
-    if not hasattr(cls, "isatty"):
-        cls.isatty = lambda self: False
+# === Hard override stdout/stderr with wrappers that support .isatty() ===
+class SafeStdWrapper(io.TextIOBase):
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
 
-# === Render StdoutFlusher fix (CORRECT) ===
-ensure_isatty(sys.stdout)
-ensure_isatty(sys.stderr)
+    def write(self, s):
+        return self._wrapped.write(s)
+
+    def flush(self):
+        return self._wrapped.flush()
+
+    def isatty(self):
+        return False
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+sys.stdout = SafeStdWrapper(sys.stdout)
+sys.stderr = SafeStdWrapper(sys.stderr)
 
 from app.celery_app import celery_app
 
