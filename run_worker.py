@@ -3,27 +3,26 @@ print(">>> RUN_WORKER_BOOTSTRAP <<<", flush=True)
 import sys
 import os
 
-# 🔧 Render / Click / Celery compatibility fixes
+# Render compatibility
+os.environ["TERM"] = "dumb"
+os.environ["CLICOLOR"] = "0"
+os.environ["PYTHONUNBUFFERED"] = "1"
+
+# Гарантируем isatty
 if not hasattr(sys.stdout, "isatty"):
     sys.stdout.isatty = lambda: False
-
 if not hasattr(sys.stderr, "isatty"):
     sys.stderr.isatty = lambda: False
 
-# ❗ КРИТИЧЕСКОЕ — отключаем TTY / цвета в Click
-os.environ["TERM"] = "dumb"
-os.environ["CLICOLOR"] = "0"
-os.environ["CELERYD_FORCE_EXECV"] = "1"
+# ⛔ НЕ ИСПОЛЬЗУЕМ CLI
+from app.celery_app import celery_app
 
-# Запуск Celery без попыток работать с терминалом
-os.execvp("celery", [
-    "celery",
-    "-A", "app.celery_app",
-    "worker",
-    "--loglevel=INFO",
-    "--pool=solo",
-    "--without-gossip",
-    "--without-mingle",
-    "--without-heartbeat",
-    "--no-color",
-])
+if __name__ == "__main__":
+    celery_app.worker_main([
+        "worker",
+        "--loglevel=INFO",
+        "--pool=solo",
+        "--without-gossip",
+        "--without-mingle",
+        "--without-heartbeat",
+    ])
