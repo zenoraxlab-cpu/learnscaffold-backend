@@ -16,9 +16,6 @@ from app.config import UPLOAD_DIR
 
 router = APIRouter()
 
-# ---------------------------------------------------------
-# STATUS
-# ---------------------------------------------------------
 class TaskStatus(str, Enum):
     RUNNING = "running"
     READY = "ready"
@@ -56,9 +53,7 @@ async def analyze_init(file: UploadFile = File(...)):
         days = 10
 
     with open(os.path.join(UPLOAD_DIR, f"{task_id}_init.json"), "w") as f:
-        json.dump({
-            "original_file": filename
-        }, f)
+        json.dump({"original_file": filename}, f)
 
     task_status[task_id] = {
         "task_id": task_id,
@@ -78,36 +73,38 @@ async def analyze_init(file: UploadFile = File(...)):
     }
 
 # ---------------------------------------------------------
-# GENERATE (START)
+# GENERATE = STATUS + WORK (ФРОНТУ ВСЁ РАВНО КУДА СТУЧАТЬ)
 # ---------------------------------------------------------
 @router.post("/analyze/generate")
 def generate(task_id: str = Body(..., embed=True)):
-    init_path = os.path.join(UPLOAD_DIR, f"{task_id}_init.json")
-    if not os.path.exists(init_path):
-        raise HTTPException(404, detail="Task not found")
+    return _advance_task(task_id)
 
-    task_status[task_id] = {
-        "task_id": task_id,
-        "status": TaskStatus.RUNNING,
-        "stage": "extracting",
-        "progress": 10,
-        "updated_at": now(),
-    }
-
-    return {"task_id": task_id, "status": "started"}
-
-# ---------------------------------------------------------
-# STATUS + WORK
-# ---------------------------------------------------------
 @router.get("/analyze/status/{task_id}")
 def get_status(task_id: str):
+    return _advance_task(task_id)
+
+# ---------------------------------------------------------
+# CORE LOGIC
+# ---------------------------------------------------------
+def _advance_task(task_id: str):
     state = task_status.get(task_id)
+
     if not state:
         raise HTTPException(404, detail="Task not found")
 
-    stage = state["stage"]
+    stage = state.get("stage")
 
-    # -------- STEP 1: TEXT --------
+    # ---------- START ----------
+    if stage == "init":
+        state.update({
+            "status": TaskStatus.RUNNING,
+            "stage": "extracting",
+            "progress": 10,
+            "updated_at": now(),
+        })
+        return state
+
+    # ---------- STEP 1 ----------
     if stage == "extracting":
         with open(os.path.join(UPLOAD_DIR, f"{task_id}_init.json")) as f:
             init = json.load(f)
@@ -120,12 +117,12 @@ def get_status(task_id: str):
 
         state.update({
             "stage": "structure",
-            "progress": 50,
+            "progress": 60,
             "updated_at": now(),
         })
         return state
 
-    # -------- STEP 2: STRUCTURE --------
+    # ---------- STEP 2 ----------
     if stage == "structure":
         with open(os.path.join(UPLOAD_DIR, f"{task_id}_text.json")) as f:
             text = json.load(f)
@@ -146,4 +143,5 @@ def get_status(task_id: str):
         })
         return state
 
+    # ---------- DONE ----------
     return state
