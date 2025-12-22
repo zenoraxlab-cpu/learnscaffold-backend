@@ -10,135 +10,140 @@ from app.utils.logger import logger
 from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
 from app.services.text_cleaner import clean_text
 from app.services.classifier import classify_document
-from app.services.structure_extractor import extract_structure_from_text
 from app.services.pdf_text import extract_clean_text
+from app.services.structure_extractor import extract_structure_from_text
 from app.config import UPLOAD_DIR
 
 router = APIRouter()
 
 # ---------------------------------------------------------
-# STATUS ENUM
+# STATUS
 # ---------------------------------------------------------
 class TaskStatus(str, Enum):
+    RUNNING = "running"
     READY = "ready"
     ERROR = "error"
 
-# ---------------------------------------------------------
-# IN-MEMORY STATUS
-# ---------------------------------------------------------
 task_status: Dict[str, dict] = {}
 
-def set_status(task_id: str, status: TaskStatus, progress: int = 0):
-    task_status[task_id] = {
-        "task_id": task_id,
-        "status": status.value,
-        "progress": progress,
-        "updated_at": datetime.utcnow().isoformat(),
-    }
-    logger.info(f"[STATUS] {task_id} → {status.value} ({progress}%)")
+def now():
+    return datetime.utcnow().isoformat()
 
 # ---------------------------------------------------------
-# STAGE 1 — INIT
+# INIT
 # ---------------------------------------------------------
 @router.post("/analyze/init")
 async def analyze_init(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, detail="Only PDF files are supported")
+        raise HTTPException(400, detail="Only PDF files supported")
 
     task_id = str(uuid.uuid4())
     filename = f"{task_id}.pdf"
-    input_path = os.path.join(UPLOAD_DIR, filename)
+    pdf_path = os.path.join(UPLOAD_DIR, filename)
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    with open(input_path, "wb") as f:
+    with open(pdf_path, "wb") as f:
         f.write(await file.read())
 
+    pages = extract_pdf_pages(pdf_path)
+    full_text = await extract_pdf_text(pdf_path)
+    cleaned = clean_text(full_text)
+
     try:
-        pages = extract_pdf_pages(input_path)
-        full_text = await extract_pdf_text(input_path)
-        cleaned = clean_text(full_text)
+        classification = classify_document(cleaned)
+        days = classification.get("recommended_days", 10)
+    except Exception:
+        days = 10
 
-        try:
-            classification = classify_document(cleaned)
-            recommended_days = classification.get("recommended_days", 10)
-        except Exception:
-            recommended_days = 10
+    with open(os.path.join(UPLOAD_DIR, f"{task_id}_init.json"), "w") as f:
+        json.dump({
+            "original_file": filename
+        }, f)
 
-        init_data = {
-            "original_file": filename,
-            "pages": len(pages),
-            "length_chars": len(cleaned),
-        }
+    task_status[task_id] = {
+        "task_id": task_id,
+        "status": TaskStatus.READY,
+        "stage": "init",
+        "progress": 100,
+        "updated_at": now(),
+    }
 
-        with open(
-            os.path.join(UPLOAD_DIR, f"{task_id}_init.json"),
-            "w",
-            encoding="utf-8",
-        ) as f:
-            json.dump(init_data, f)
-
-        set_status(task_id, TaskStatus.READY, progress=100)
-
-        return {
-            "task_id": task_id,
-            "pages": len(pages),
-            "suggested_plan": {
-                "days": recommended_days,
-                "hours_per_day": 3,
-            },
-        }
-
-    except Exception as e:
-        logger.error(f"[INIT FAILED] {task_id}: {e}")
-        set_status(task_id, TaskStatus.ERROR)
-        raise HTTPException(500, detail="Initial analysis failed")
+    return {
+        "task_id": task_id,
+        "pages": len(pages),
+        "suggested_plan": {
+            "days": days,
+            "hours_per_day": 3,
+        },
+    }
 
 # ---------------------------------------------------------
-# STAGE 2 — GENERATE (SYNC, FAST, STABLE)
+# GENERATE (START)
 # ---------------------------------------------------------
 @router.post("/analyze/generate")
-def generate(
-    task_id: str = Body(..., embed=True),
-    days: int = Body(10),
-    hours_per_day: int = Body(3),
-):
+def generate(task_id: str = Body(..., embed=True)):
     init_path = os.path.join(UPLOAD_DIR, f"{task_id}_init.json")
     if not os.path.exists(init_path):
         raise HTTPException(404, detail="Task not found")
 
-    try:
-        with open(init_path, "r", encoding="utf-8") as f:
-            init_data = json.load(f)
+    task_status[task_id] = {
+        "task_id": task_id,
+        "status": TaskStatus.RUNNING,
+        "stage": "extracting",
+        "progress": 10,
+        "updated_at": now(),
+    }
 
-        pdf_path = os.path.join(UPLOAD_DIR, init_data["original_file"])
-
-        # 🔴 ВСЯ РАБОТА ЗДЕСЬ — БЫСТРАЯ
-        text_by_page = extract_clean_text(pdf_path)
-        structure = extract_structure_from_text(text_by_page)
-
-        result = {
-            "task_id": task_id,
-            "days": days,
-            "hours_per_day": hours_per_day,
-            "structure": structure,
-        }
-
-        result_path = os.path.join(UPLOAD_DIR, f"{task_id}_final.json")
-        with open(result_path, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-
-        return result
-
-    except Exception as e:
-        logger.error(f"[GENERATE FAILED] {task_id}: {e}")
-        raise HTTPException(500, detail="Generation failed")
+    return {"task_id": task_id, "status": "started"}
 
 # ---------------------------------------------------------
-# STATUS (OPTIONAL)
+# STATUS + WORK
 # ---------------------------------------------------------
 @router.get("/analyze/status/{task_id}")
 def get_status(task_id: str):
-    status = task_status.get(task_id)
-    if not status:
+    state = task_status.get(task_id)
+    if not state:
         raise HTTPException(404, detail="Task not found")
-    return status
+
+    stage = state["stage"]
+
+    # -------- STEP 1: TEXT --------
+    if stage == "extracting":
+        with open(os.path.join(UPLOAD_DIR, f"{task_id}_init.json")) as f:
+            init = json.load(f)
+
+        pdf_path = os.path.join(UPLOAD_DIR, init["original_file"])
+        text = extract_clean_text(pdf_path)
+
+        with open(os.path.join(UPLOAD_DIR, f"{task_id}_text.json"), "w") as f:
+            json.dump(text, f)
+
+        state.update({
+            "stage": "structure",
+            "progress": 50,
+            "updated_at": now(),
+        })
+        return state
+
+    # -------- STEP 2: STRUCTURE --------
+    if stage == "structure":
+        with open(os.path.join(UPLOAD_DIR, f"{task_id}_text.json")) as f:
+            text = json.load(f)
+
+        structure = extract_structure_from_text(text)
+
+        with open(os.path.join(UPLOAD_DIR, f"{task_id}_final.json"), "w") as f:
+            json.dump({
+                "task_id": task_id,
+                "structure": structure,
+            }, f, ensure_ascii=False, indent=2)
+
+        state.update({
+            "status": TaskStatus.READY,
+            "stage": "done",
+            "progress": 100,
+            "updated_at": now(),
+        })
+        return state
+
+    return state
