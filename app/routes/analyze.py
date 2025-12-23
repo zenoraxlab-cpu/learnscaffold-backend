@@ -30,7 +30,7 @@ def now():
     return datetime.utcnow().isoformat()
 
 # ---------------------------------------------------------
-# INIT — анализ PDF + summary для фронта
+# INIT — анализ PDF + summary
 # ---------------------------------------------------------
 @router.post("/analyze/init")
 async def analyze_init(file: UploadFile = File(...)):
@@ -45,20 +45,16 @@ async def analyze_init(file: UploadFile = File(...)):
     with open(pdf_path, "wb") as f:
         f.write(await file.read())
 
-    # --- PDF ---
     pages = extract_pdf_pages(pdf_path)
     full_text = await extract_pdf_text(pdf_path)
     cleaned = clean_text(full_text)
 
-    # --- CLASSIFICATION ---
     try:
         classification = classify_document(cleaned)
-
         days = classification.get("recommended_days", 10)
         document_type = classification.get("document_type", "Document")
         summary = classification.get("summary", "")
         main_topics = classification.get("main_topics", [])
-
     except Exception as e:
         logger.warning(f"[CLASSIFIER] Failed: {e}")
         days = 10
@@ -66,7 +62,6 @@ async def analyze_init(file: UploadFile = File(...)):
         summary = ""
         main_topics = []
 
-    # --- SAVE INIT ---
     with open(os.path.join(UPLOAD_DIR, f"{task_id}_init.json"), "w", encoding="utf-8") as f:
         json.dump(
             {
@@ -84,11 +79,10 @@ async def analyze_init(file: UploadFile = File(...)):
         "task_id": task_id,
         "status": TaskStatus.READY,
         "stage": "init",
-        "progress": 100,
+        "progress": 0,
         "updated_at": now(),
     }
 
-    # --- RESPONSE FOR FRONT ---
     return {
         "task_id": task_id,
         "pages": len(pages),
@@ -102,10 +96,16 @@ async def analyze_init(file: UploadFile = File(...)):
     }
 
 # ---------------------------------------------------------
-# GENERATE (пошаговый fake-progress, фронту всё равно)
+# GENERATE — СТАРТ ГЕНЕРАЦИИ (ФИКС)
 # ---------------------------------------------------------
 @router.post("/analyze/generate")
-def generate(task_id: str = Body(..., embed=True)):
+def generate(payload: dict = Body(...)):
+    task_id = payload.get("task_id") or payload.get("file_id")
+
+    if not task_id:
+        raise HTTPException(422, detail="task_id or file_id required")
+
+    logger.info(f"[GENERATE] Start generation for {task_id}")
     return _advance_task(task_id)
 
 @router.get("/analyze/status/{task_id}")
@@ -113,7 +113,7 @@ def get_status(task_id: str):
     return _advance_task(task_id)
 
 # ---------------------------------------------------------
-# CORE LOGIC
+# CORE LOGIC — ПОШАГОВЫЙ ПРОГРЕСС
 # ---------------------------------------------------------
 def _advance_task(task_id: str):
     state = task_status.get(task_id)
@@ -122,6 +122,7 @@ def _advance_task(task_id: str):
         raise HTTPException(404, detail="Task not found")
 
     stage = state.get("stage")
+    logger.info(f"[STATUS FLOW] {task_id} stage={stage}")
 
     # ---------- START ----------
     if stage == "init":
@@ -177,5 +178,4 @@ def _advance_task(task_id: str):
         })
         return state
 
-    # ---------- DONE ----------
     return state
