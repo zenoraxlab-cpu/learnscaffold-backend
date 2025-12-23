@@ -10,14 +10,11 @@ from app.routes import studyplan
 from app.routes import plan_pdf
 from app.routes import plan_download
 
-
-
 app = FastAPI(
     title="LearnScaffold Backend",
     description="API for document analysis and study plan generation",
     version="1.0.0",
 )
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,32 +28,18 @@ app.add_middleware(
 # ROUTERS
 # ---------------------------------------------------------
 
-# Все корректно:
 app.include_router(upload.router, prefix="/upload", tags=["Upload"])
-
-# Анализ — ПРАВИЛЬНО:
 app.include_router(analyze.router, tags=["Analyze"])
-
-# Генерация
 app.include_router(generate.router, prefix="/generate", tags=["Generate"])
-
-# Видео
 app.include_router(video.router, prefix="/video", tags=["Video"])
-
-# Health — БЕЗ prefix! 
-# И В ФАЙЛЕ health.py ОБЯЗАТЕЛЬНО ДОЛЖНО БЫТЬ @router.get("/healthz")
 app.include_router(health.router, tags=["Health"])
-
-# Старые эндпоинты
 app.include_router(studyplan.router, prefix="/studyplan", tags=["StudyPlan"])
 
-# PDF
+# PDF GENERATION (POST /plan/pdf)
 app.include_router(plan_pdf.router, prefix="/plan", tags=["Plan"])
 
-# Download
-app.include_router(plan_download.router, prefix="/plan")
-
-
+# PDF DOWNLOAD (GET /plan/pdf/{task_id})
+app.include_router(plan_download.router, prefix="/plan", tags=["Download"])
 
 # ---------------------------------------------------------
 # ROOT
