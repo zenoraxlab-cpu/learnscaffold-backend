@@ -11,8 +11,7 @@ from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
 from app.services.text_cleaner import clean_text
 from app.services.classifier import classify_document
 from app.services.pdf_text import extract_clean_text
-from app.services.structure_extractor import extract_structure_from_text
-from app.utils.plan_mvp import build_mvp_plan_text
+from app.services.ai_analyzer import ai_analyze_chunks
 from app.config import UPLOAD_DIR
 
 router = APIRouter()
@@ -121,12 +120,12 @@ def _advance_task(task_id: str):
         state.update(
             status=TaskStatus.RUNNING,
             stage="extracting",
-            progress=15,
+            progress=20,
             updated_at=now(),
         )
         return state
 
-    # EXTRACTING → STRUCTURE
+    # EXTRACTING → AI
     if stage == "extracting":
         with open(os.path.join(UPLOAD_DIR, f"{task_id}_init.json"), encoding="utf-8") as f:
             init = json.load(f)
@@ -134,28 +133,20 @@ def _advance_task(task_id: str):
         pdf_path = os.path.join(UPLOAD_DIR, init["original_file"])
         text = extract_clean_text(pdf_path)
 
-        with open(os.path.join(UPLOAD_DIR, f"{task_id}_text.json"), "w", encoding="utf-8") as f:
-            json.dump(text, f, ensure_ascii=False)
+        # MVP: один чанк из начала текста
+        chunks = [
+            {
+                "text": text[:4000],
+                "start_page": 1,
+                "end_page": 5,
+            }
+        ]
 
-        state.update(
-            stage="structure",
-            progress=60,
-            updated_at=now(),
-        )
-        return state
-
-    # STRUCTURE → DONE (+ MVP PLAN)
-    if stage == "structure":
-        with open(os.path.join(UPLOAD_DIR, f"{task_id}_text.json"), encoding="utf-8") as f:
-            text = json.load(f)
-
-        structure = extract_structure_from_text(text)
-        plan_text = build_mvp_plan_text(structure, days=10)
+        ai_plan = ai_analyze_chunks(chunks)
 
         final = {
             "task_id": task_id,
-            "structure": structure,
-            "plan_text": plan_text,
+            "ai_plan": ai_plan,
         }
 
         with open(os.path.join(UPLOAD_DIR, f"{task_id}_final.json"), "w", encoding="utf-8") as f:
