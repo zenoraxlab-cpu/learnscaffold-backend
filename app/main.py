@@ -8,6 +8,8 @@ from app.routes import video
 from app.routes import health
 from app.routes import studyplan
 from app.routes import plan_pdf
+from app.routes import plan_download
+
 
 
 app = FastAPI(
@@ -50,6 +52,10 @@ app.include_router(studyplan.router, prefix="/studyplan", tags=["StudyPlan"])
 
 # PDF
 app.include_router(plan_pdf.router, prefix="/plan", tags=["Plan"])
+
+# Download
+app.include_router(plan_download.router, prefix="/plan")
+
 
 
 # ---------------------------------------------------------
