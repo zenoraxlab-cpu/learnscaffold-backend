@@ -30,3 +30,13 @@ studyplan-frontend/.env.*
 .vscode/
 .idea/
 .DS_Store
+
+# runtime / worker artifacts
+Common/
+Exited/
+Running/
+
+# local worker scripts
+run_worker.py
+app/run_worker_direct.py
+app/utils/entrypoint.sh
