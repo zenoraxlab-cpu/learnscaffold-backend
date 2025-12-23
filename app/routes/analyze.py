@@ -12,6 +12,7 @@ from app.services.text_cleaner import clean_text
 from app.services.classifier import classify_document
 from app.services.pdf_text import extract_clean_text
 from app.services.structure_extractor import extract_structure_from_text
+from app.utils.plan_mvp import build_mvp_plan_text
 from app.config import UPLOAD_DIR
 
 router = APIRouter()
@@ -30,7 +31,7 @@ def now():
     return datetime.utcnow().isoformat()
 
 # ---------------------------------------------------------
-# INIT — анализ PDF + summary
+# INIT
 # ---------------------------------------------------------
 @router.post("/analyze/init")
 async def analyze_init(file: UploadFile = File(...)):
@@ -38,10 +39,9 @@ async def analyze_init(file: UploadFile = File(...)):
         raise HTTPException(400, detail="Only PDF files supported")
 
     task_id = str(uuid.uuid4())
-    filename = f"{task_id}.pdf"
-    pdf_path = os.path.join(UPLOAD_DIR, filename)
-
     os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+    pdf_path = os.path.join(UPLOAD_DIR, f"{task_id}.pdf")
     with open(pdf_path, "wb") as f:
         f.write(await file.read())
 
@@ -55,8 +55,7 @@ async def analyze_init(file: UploadFile = File(...)):
         document_type = classification.get("document_type", "Document")
         summary = classification.get("summary", "")
         main_topics = classification.get("main_topics", [])
-    except Exception as e:
-        logger.warning(f"[CLASSIFIER] Failed: {e}")
+    except Exception:
         days = 10
         document_type = "Document"
         summary = ""
@@ -65,10 +64,8 @@ async def analyze_init(file: UploadFile = File(...)):
     with open(os.path.join(UPLOAD_DIR, f"{task_id}_init.json"), "w", encoding="utf-8") as f:
         json.dump(
             {
-                "original_file": filename,
-                "document_type": document_type,
-                "summary": summary,
-                "main_topics": main_topics,
+                "original_file": f"{task_id}.pdf",
+                "days": days,
             },
             f,
             ensure_ascii=False,
@@ -96,16 +93,13 @@ async def analyze_init(file: UploadFile = File(...)):
     }
 
 # ---------------------------------------------------------
-# GENERATE — СТАРТ ГЕНЕРАЦИИ (ФИКС)
+# GENERATE
 # ---------------------------------------------------------
 @router.post("/analyze/generate")
 def generate(payload: dict = Body(...)):
     task_id = payload.get("task_id") or payload.get("file_id")
-
     if not task_id:
-        raise HTTPException(422, detail="task_id or file_id required")
-
-    logger.info(f"[GENERATE] Start generation for {task_id}")
+        raise HTTPException(422, detail="task_id required")
     return _advance_task(task_id)
 
 @router.get("/analyze/status/{task_id}")
@@ -113,28 +107,26 @@ def get_status(task_id: str):
     return _advance_task(task_id)
 
 # ---------------------------------------------------------
-# CORE LOGIC — ПОШАГОВЫЙ ПРОГРЕСС
+# CORE FLOW
 # ---------------------------------------------------------
 def _advance_task(task_id: str):
     state = task_status.get(task_id)
-
     if not state:
         raise HTTPException(404, detail="Task not found")
 
-    stage = state.get("stage")
-    logger.info(f"[STATUS FLOW] {task_id} stage={stage}")
+    stage = state["stage"]
 
-    # ---------- START ----------
+    # INIT → EXTRACTING
     if stage == "init":
-        state.update({
-            "status": TaskStatus.RUNNING,
-            "stage": "extracting",
-            "progress": 10,
-            "updated_at": now(),
-        })
+        state.update(
+            status=TaskStatus.RUNNING,
+            stage="extracting",
+            progress=15,
+            updated_at=now(),
+        )
         return state
 
-    # ---------- STEP 1 ----------
+    # EXTRACTING → STRUCTURE
     if stage == "extracting":
         with open(os.path.join(UPLOAD_DIR, f"{task_id}_init.json"), encoding="utf-8") as f:
             init = json.load(f)
@@ -145,37 +137,37 @@ def _advance_task(task_id: str):
         with open(os.path.join(UPLOAD_DIR, f"{task_id}_text.json"), "w", encoding="utf-8") as f:
             json.dump(text, f, ensure_ascii=False)
 
-        state.update({
-            "stage": "structure",
-            "progress": 60,
-            "updated_at": now(),
-        })
+        state.update(
+            stage="structure",
+            progress=60,
+            updated_at=now(),
+        )
         return state
 
-    # ---------- STEP 2 ----------
+    # STRUCTURE → DONE (+ MVP PLAN)
     if stage == "structure":
         with open(os.path.join(UPLOAD_DIR, f"{task_id}_text.json"), encoding="utf-8") as f:
             text = json.load(f)
 
         structure = extract_structure_from_text(text)
+        plan_text = build_mvp_plan_text(structure, days=10)
+
+        final = {
+            "task_id": task_id,
+            "structure": structure,
+            "plan_text": plan_text,
+        }
 
         with open(os.path.join(UPLOAD_DIR, f"{task_id}_final.json"), "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "task_id": task_id,
-                    "structure": structure,
-                },
-                f,
-                ensure_ascii=False,
-                indent=2,
-            )
+            json.dump(final, f, ensure_ascii=False, indent=2)
 
-        state.update({
-            "status": TaskStatus.READY,
-            "stage": "done",
-            "progress": 100,
-            "updated_at": now(),
-        })
+        state.update(
+            status=TaskStatus.READY,
+            stage="done",
+            progress=100,
+            result=final,
+            updated_at=now(),
+        )
         return state
 
     return state
