@@ -105,6 +105,21 @@ def get_status(task_id: str):
     return _advance_task(task_id)
 
 # ---------------------------------------------------------
+# RESULT (AI PLAN)
+# ---------------------------------------------------------
+@router.get("/analyze/result/{task_id}")
+def get_analyze_result(task_id: str):
+    final_path = os.path.join(UPLOAD_DIR, f"{task_id}_final.json")
+
+    if not os.path.exists(final_path):
+        raise HTTPException(status_code=404, detail="Result not ready")
+
+    with open(final_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    return data
+
+# ---------------------------------------------------------
 # CORE FLOW
 # ---------------------------------------------------------
 def _advance_task(task_id: str):
@@ -132,6 +147,7 @@ def _advance_task(task_id: str):
         pdf_path = os.path.join(UPLOAD_DIR, init["original_file"])
         text = extract_clean_text(pdf_path)
 
+        # MVP: один AI-анализируемый чанк
         chunks = [
             {
                 "text": text[:4000],
@@ -150,7 +166,6 @@ def _advance_task(task_id: str):
         with open(os.path.join(UPLOAD_DIR, f"{task_id}_final.json"), "w", encoding="utf-8") as f:
             json.dump(final, f, ensure_ascii=False, indent=2)
 
-        # ❗ ВАЖНО: НИКАКОГО result В STATUS
         state.update(
             status=TaskStatus.READY,
             stage="done",
