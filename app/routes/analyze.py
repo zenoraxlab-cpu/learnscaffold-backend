@@ -6,7 +6,6 @@ import uuid
 from typing import Dict
 from datetime import datetime
 
-from app.utils.logger import logger
 from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
 from app.services.text_cleaner import clean_text
 from app.services.classifier import classify_document
@@ -133,7 +132,6 @@ def _advance_task(task_id: str):
         pdf_path = os.path.join(UPLOAD_DIR, init["original_file"])
         text = extract_clean_text(pdf_path)
 
-        # MVP: один чанк из начала текста
         chunks = [
             {
                 "text": text[:4000],
@@ -152,11 +150,11 @@ def _advance_task(task_id: str):
         with open(os.path.join(UPLOAD_DIR, f"{task_id}_final.json"), "w", encoding="utf-8") as f:
             json.dump(final, f, ensure_ascii=False, indent=2)
 
+        # ❗ ВАЖНО: НИКАКОГО result В STATUS
         state.update(
             status=TaskStatus.READY,
             stage="done",
             progress=100,
-            result=final,
             updated_at=now(),
         )
         return state
