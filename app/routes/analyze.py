@@ -13,7 +13,6 @@ from app.services.classifier import classify_document
 from app.services.pdf_text import extract_clean_text
 from app.config import UPLOAD_DIR
 
-# semantic + LLM
 from app.services.semantic_sections import extract_semantic_sections
 from app.services.llm_section_analyzer import analyze_section_with_llm
 
@@ -148,13 +147,21 @@ def _advance_task(task_id: str):
 
         pdf_path = os.path.join(UPLOAD_DIR, init["original_file"])
 
-        # extract_clean_text may return list[str]
         pages_text = extract_clean_text(pdf_path)
 
-        if isinstance(pages_text, list):
-            text = "\n\n".join(pages_text)
-        else:
+        # 🔧 NORMALIZE pages_text → single string
+        if isinstance(pages_text, str):
             text = pages_text
+        elif isinstance(pages_text, list):
+            parts = []
+            for item in pages_text:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and "text" in item:
+                    parts.append(item["text"])
+            text = "\n\n".join(parts)
+        else:
+            text = ""
 
         # semantic sections
         raw_sections = extract_semantic_sections(text)
