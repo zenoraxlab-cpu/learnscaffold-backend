@@ -60,3 +60,10 @@ Running/
 run_worker.py
 app/run_worker_direct.py
 app/utils/entrypoint.sh
+
+.venv/
+Common/
+Exited/
+Running/
+data/
+app/scripts/
