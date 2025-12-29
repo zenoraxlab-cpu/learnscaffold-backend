@@ -5,6 +5,7 @@ import json
 import uuid
 from typing import Dict
 from datetime import datetime
+import asyncio
 
 from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
 from app.services.text_cleaner import clean_text
@@ -12,7 +13,7 @@ from app.services.classifier import classify_document
 from app.services.pdf_text import extract_clean_text
 from app.config import UPLOAD_DIR
 
-# NEW — semantic + LLM
+# semantic + LLM
 from app.services.semantic_sections import extract_semantic_sections
 from app.services.llm_section_analyzer import analyze_section_with_llm
 
@@ -140,22 +141,32 @@ def _advance_task(task_id: str):
         )
         return state
 
-    # EXTRACTING → AI (NEW LOGIC)
+    # EXTRACTING → AI
     if stage == "extracting":
         with open(os.path.join(UPLOAD_DIR, f"{task_id}_init.json"), encoding="utf-8") as f:
             init = json.load(f)
 
         pdf_path = os.path.join(UPLOAD_DIR, init["original_file"])
-        text = extract_clean_text(pdf_path)
 
-        # 1️⃣ semantic sections
+        # extract_clean_text may return list[str]
+        pages_text = extract_clean_text(pdf_path)
+
+        if isinstance(pages_text, list):
+            text = "\n\n".join(pages_text)
+        else:
+            text = pages_text
+
+        # semantic sections
         raw_sections = extract_semantic_sections(text)
 
         sections = []
+
         for idx, sec in enumerate(raw_sections, start=1):
-            analysis = analyze_section_with_llm(
-                title=sec["title"],
-                text=sec["text"][:1500],  # safety limit
+            analysis = asyncio.run(
+                analyze_section_with_llm(
+                    title=sec["title"],
+                    text=sec["text"][:1500],
+                )
             )
 
             sections.append(
