@@ -1,4 +1,3 @@
-# app/services/mwp_pdf_renderer.py
 from __future__ import annotations
 
 import os
@@ -21,14 +20,18 @@ def _register_font(font_path: str) -> str:
 def text_to_pdf_bytes(text: str, title: Optional[str] = None) -> bytes:
     """
     Minimal, predictable PDF renderer:
-      - monospaced-like layout (but using DejaVuSans)
-      - automatic page breaks
+    - Unicode-safe (Cyrillic OK)
+    - automatic page breaks
+    - single-column layout
     """
-    font_path = os.path.join("app", "assets", "fonts", "DejaVuSans.ttf")
+
+    # === ПРАВИЛЬНЫЙ ПУТЬ К ШРИФТУ ===
+    font_path = os.path.join("app", "fonts", "DejaVuSans.ttf")
+
     if os.path.exists(font_path):
         font_name = _register_font(font_path)
     else:
-        # fallback (may break Cyrillic, but won't crash)
+        # fallback — PDF создастся, но кириллица сломается
         font_name = "Helvetica"
 
     buf = BytesIO()
@@ -40,22 +43,27 @@ def text_to_pdf_bytes(text: str, title: Optional[str] = None) -> bytes:
     line_h = 14
     y = top
 
+    # --- основной шрифт ---
     c.setFont(font_name, 12)
 
+    # --- заголовок ---
     if title:
         c.setFont(font_name, 14)
         c.drawString(left, y, title)
         y -= (line_h * 2)
         c.setFont(font_name, 12)
 
+    # --- текст ---
     for line in text.splitlines():
         if y < 56:
             c.showPage()
             c.setFont(font_name, 12)
             y = top
+
         c.drawString(left, y, line)
         y -= line_h
 
     c.showPage()
     c.save()
+
     return buf.getvalue()
