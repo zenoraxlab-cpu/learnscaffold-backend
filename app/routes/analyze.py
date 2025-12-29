@@ -10,8 +10,11 @@ from app.services.pdf_extractor import extract_pdf_text, extract_pdf_pages
 from app.services.text_cleaner import clean_text
 from app.services.classifier import classify_document
 from app.services.pdf_text import extract_clean_text
-from app.services.ai_analyzer import ai_analyze_chunks
 from app.config import UPLOAD_DIR
+
+# NEW — semantic + LLM
+from app.services.semantic_sections import extract_semantic_sections
+from app.services.llm_section_analyzer import analyze_section_with_llm
 
 router = APIRouter()
 
@@ -95,7 +98,7 @@ async def analyze_init(file: UploadFile = File(...)):
 # ---------------------------------------------------------
 @router.post("/analyze/generate")
 def generate(payload: dict = Body(...)):
-    task_id = payload.get("task_id") or payload.get("file_id")
+    task_id = payload.get("task_id")
     if not task_id:
         raise HTTPException(422, detail="task_id required")
     return _advance_task(task_id)
@@ -105,7 +108,7 @@ def get_status(task_id: str):
     return _advance_task(task_id)
 
 # ---------------------------------------------------------
-# RESULT (AI PLAN)
+# RESULT
 # ---------------------------------------------------------
 @router.get("/analyze/result/{task_id}")
 def get_analyze_result(task_id: str):
@@ -115,9 +118,7 @@ def get_analyze_result(task_id: str):
         raise HTTPException(status_code=404, detail="Result not ready")
 
     with open(final_path, encoding="utf-8") as f:
-        data = json.load(f)
-
-    return data
+        return json.load(f)
 
 # ---------------------------------------------------------
 # CORE FLOW
@@ -139,7 +140,7 @@ def _advance_task(task_id: str):
         )
         return state
 
-    # EXTRACTING → AI
+    # EXTRACTING → AI (NEW LOGIC)
     if stage == "extracting":
         with open(os.path.join(UPLOAD_DIR, f"{task_id}_init.json"), encoding="utf-8") as f:
             init = json.load(f)
@@ -147,20 +148,35 @@ def _advance_task(task_id: str):
         pdf_path = os.path.join(UPLOAD_DIR, init["original_file"])
         text = extract_clean_text(pdf_path)
 
-        # MVP: один AI-анализируемый чанк
-        chunks = [
-            {
-                "text": text[:4000],
-                "start_page": 1,
-                "end_page": 5,
-            }
-        ]
+        # 1️⃣ semantic sections
+        raw_sections = extract_semantic_sections(text)
 
-        ai_plan = ai_analyze_chunks(chunks)
+        sections = []
+        for idx, sec in enumerate(raw_sections, start=1):
+            analysis = analyze_section_with_llm(
+                title=sec["title"],
+                text=sec["text"][:1500],  # safety limit
+            )
+
+            sections.append(
+                {
+                    "section_id": f"s{idx}",
+                    "title": sec["title"],
+                    "analysis": analysis,
+                }
+            )
+
+        ai_plan_v2 = {
+            "meta": {
+                "audience": "student_self_learning",
+                "language": "en",
+            },
+            "sections": sections,
+        }
 
         final = {
             "task_id": task_id,
-            "ai_plan": ai_plan,
+            "ai_plan": ai_plan_v2,
         }
 
         with open(os.path.join(UPLOAD_DIR, f"{task_id}_final.json"), "w", encoding="utf-8") as f:
